@@ -4,7 +4,15 @@ import 'package:monu/core/formatters.dart';
 import 'package:monu/models/monitoring_status.dart';
 import 'package:monu/models/sensor_spec.dart';
 
-enum AlertKind { threshold, sensorFailure, deviceOffline }
+enum AlertKind {
+  threshold,
+  sensorFailure,
+  deviceOffline,
+  deviceOnline,
+  wateringStarted,
+  wateringFinished,
+  drySoil,
+}
 
 /// Satu kejadian peringatan. Punya waktu mulai dan (kalau sudah pulih) waktu selesai.
 class AlertEvent {
@@ -16,6 +24,9 @@ class AlertEvent {
     this.sensorId,
     this.value,
     this.thresholdValue,
+    this.customTitle,
+    this.customMessage,
+    this.resolvedAt,
   })  : lastValue = value,
         peakValue = value;
 
@@ -30,6 +41,8 @@ class AlertEvent {
   /// Nilai saat peringatan mulai.
   final double? value;
   final double? thresholdValue;
+  final String? customTitle;
+  final String? customMessage;
 
   double? lastValue;
   double? peakValue;
@@ -40,29 +53,56 @@ class AlertEvent {
   SensorSpec? get spec => sensorId == null ? null : SensorConfig.byId(sensorId!);
 
   String get title {
+    if (customTitle != null) return customTitle!;
     switch (kind) {
       case AlertKind.deviceOffline:
-        return 'Perangkat offline';
+        return 'Koneksi ESP32 terputus';
+      case AlertKind.deviceOnline:
+        return 'Koneksi ESP32 terhubung kembali';
+      case AlertKind.wateringStarted:
+        return 'Penyiraman otomatis dimulai';
+      case AlertKind.wateringFinished:
+        return 'Penyiraman selesai';
+      case AlertKind.drySoil:
+        return 'Tanah terdeteksi kering';
       case AlertKind.sensorFailure:
-        return '${spec!.name} tidak terbaca';
+        return '${spec?.name ?? "Sensor"} tidak terbaca';
       case AlertKind.threshold:
+        if (sensorId == 'soilMoistureRaw') {
+          return 'Tanah terdeteksi kering';
+        } else if (sensorId == 'temperature') {
+          return 'Suhu DHT11 melebihi ambang batas';
+        } else if (sensorId == 'mq2Raw') {
+          return 'Terdeteksi indikasi gas atau asap';
+        } else if (sensorId == 'thermocouple') {
+          return 'Suhu thermocouple melebihi batas';
+        }
         return level == SensorLevel.check
-            ? '${spec!.name} perlu diperiksa'
-            : '${spec!.name} melewati ambang';
+            ? '${spec?.name ?? "Sensor"} perlu diperiksa'
+            : '${spec?.name ?? "Sensor"} melewati ambang';
     }
   }
 
   String get message {
+    if (customMessage != null) return customMessage!;
     switch (kind) {
       case AlertKind.deviceOffline:
-        return 'Tidak ada data baru selama lebih dari '
+        return 'Tidak ada data baru dari ESP32 selama lebih dari '
             '${IotConfig.offlineAfter.inSeconds} detik. '
-            'Periksa daya dan koneksi Wi-Fi perangkat.';
+            'Periksa daya dan jaringan Wi-Fi perangkat.';
+      case AlertKind.deviceOnline:
+        return 'Perangkat ESP32 kembali online dan dapat berkomunikasi dengan aplikasi.';
+      case AlertKind.wateringStarted:
+        return 'Relay aktif (GPIO 19). Pompa air sedang menyiram tanah secara otomatis.';
+      case AlertKind.wateringFinished:
+        return 'Relay mati. Penyiraman selesai, kelembapan aman telah tercapai.';
+      case AlertKind.drySoil:
+        return 'Kelembapan tanah rendah melewati batas normal. Sistem menyiram otomatis.';
       case AlertKind.sensorFailure:
-        return 'Pembacaan gagal. Nilai ditandai tidak tersedia dan tidak '
-            'diganti dengan angka perkiraan.';
+        return 'Pembacaan gagal atau modul sensor belum terpasang. Nilai ditandai belum tersedia.';
       case AlertKind.threshold:
-        final SensorSpec s = spec!;
+        final SensorSpec? s = spec;
+        if (s == null) return 'Nilai sensor melewati ambang batas.';
         final String shown =
             '${Fmt.number(value, decimals: s.decimals)} ${s.unit}';
         final String limit =

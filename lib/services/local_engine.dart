@@ -291,6 +291,14 @@ class LocalEngine implements AssistantEngine {
     switch (a.kind) {
       case AlertKind.deviceOffline:
         return 'cek daya dan Wi-Fi ESP32.';
+      case AlertKind.deviceOnline:
+        return 'perangkat sudah terhubung kembali dan siap dimonitor.';
+      case AlertKind.wateringStarted:
+        return 'pompa air sedang aktif menyiram tanah.';
+      case AlertKind.wateringFinished:
+        return 'penyiraman telah selesai dan pompa kembali mati.';
+      case AlertKind.drySoil:
+        return 'cek posisi probe kelembapan tanah dan ketersediaan air penyiraman.';
       case AlertKind.sensorFailure:
         return 'cek kabel, pin, dan catu daya sensor itu.';
       case AlertKind.threshold:
@@ -303,6 +311,8 @@ class LocalEngine implements AssistantEngine {
             'tanah relatif kering di titik probe. Cek posisi probe dan kalibrasi pada media yang sama.',
           'mq2Raw' =>
             'pastikan MQ-2 sudah menjalani pemanasan, cek ventilasi dan sumber gas atau asap lain di sekitarnya (misalnya parfum atau spirtus). Jangan menguji dengan api.',
+          'thermocouple' =>
+            'suhu thermocouple tinggi. Periksa titik panas dan pastikan probe thermocouple terpasang kuat.',
           _ => 'periksa sensor dan sambungannya.',
         };
     }

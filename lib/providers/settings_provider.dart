@@ -10,26 +10,35 @@ class SettingsProvider extends ChangeNotifier {
   static const String _kMock = 'use_mock_data';
   static const String _kUrl = 'database_url';
   static const String _kDevice = 'device_id';
+  static const String _kEsp32Ip = 'esp32_ip';
+  static const String _kConnMode = 'connection_mode';
 
   static String _thresholdKey(String sensorId) => 'threshold_$sensorId';
 
   SharedPreferences? _prefs;
   bool _loaded = false;
-  bool _useMockData = IotConfig.useMockData;
+  bool _useMockData = false;
   String _databaseUrl = IotConfig.firebaseDatabaseUrl;
   String _deviceId = IotConfig.deviceId;
+  String _esp32Ip = IotConfig.defaultEsp32Ip;
+  String _connectionMode = 'esp32'; // 'esp32', 'mock', 'firebase'
   final Map<String, AlertLimit> _custom = <String, AlertLimit>{};
 
   bool get loaded => _loaded;
-  bool get useMockData => _useMockData;
+  bool get useMockData => _connectionMode == 'mock' || _useMockData;
   String get databaseUrl => _databaseUrl;
   String get deviceId => _deviceId;
+  String get esp32Ip => _esp32Ip;
+  String get connectionMode => _connectionMode;
+  bool get isEsp32Mode => _connectionMode == 'esp32';
 
   Future<void> load() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     _prefs = prefs;
 
-    _useMockData = prefs.getBool(_kMock) ?? IotConfig.useMockData;
+    _esp32Ip = prefs.getString(_kEsp32Ip) ?? IotConfig.defaultEsp32Ip;
+    _connectionMode = prefs.getString(_kConnMode) ?? 'esp32';
+    _useMockData = prefs.getBool(_kMock) ?? (_connectionMode == 'mock');
     _databaseUrl = prefs.getString(_kUrl) ?? IotConfig.firebaseDatabaseUrl;
     _deviceId = prefs.getString(_kDevice) ?? IotConfig.deviceId;
 
@@ -51,8 +60,29 @@ class SettingsProvider extends ChangeNotifier {
 
   Future<void> setUseMockData(bool value) async {
     _useMockData = value;
+    _connectionMode = value ? 'mock' : 'esp32';
     notifyListeners();
     await _prefs?.setBool(_kMock, value);
+    await _prefs?.setString(_kConnMode, _connectionMode);
+  }
+
+  Future<void> setEsp32Ip(String value) async {
+    final String clean = value.trim().replaceAll('http://', '').replaceAll('/', '');
+    _esp32Ip = clean.isEmpty ? IotConfig.defaultEsp32Ip : clean;
+    _connectionMode = 'esp32';
+    _useMockData = false;
+    notifyListeners();
+    await _prefs?.setString(_kEsp32Ip, _esp32Ip);
+    await _prefs?.setString(_kConnMode, 'esp32');
+    await _prefs?.setBool(_kMock, false);
+  }
+
+  Future<void> setConnectionMode(String mode) async {
+    _connectionMode = mode;
+    _useMockData = (mode == 'mock');
+    notifyListeners();
+    await _prefs?.setString(_kConnMode, mode);
+    await _prefs?.setBool(_kMock, _useMockData);
   }
 
   Future<void> setDatabaseUrl(String value) async {

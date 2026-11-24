@@ -7,6 +7,7 @@ import 'package:monu/models/device_snapshot.dart';
 import 'package:monu/models/monitoring_status.dart';
 import 'package:monu/models/sensor_spec.dart';
 import 'package:monu/providers/settings_provider.dart';
+import 'package:monu/repositories/esp32_sensor_repository.dart';
 import 'package:monu/repositories/firebase_sensor_repository.dart';
 import 'package:monu/repositories/mock_sensor_repository.dart';
 import 'package:monu/repositories/sensor_repository.dart';
@@ -41,6 +42,8 @@ class MonitorProvider extends ChangeNotifier {
   final Map<String, AlertEvent> _active = <String, AlertEvent>{};
   AlertEvent? _offlineAlert;
   int _alertSeq = 0;
+  bool? _lastPumpActive;
+  bool _wasOffline = false;
 
   // ---------------------------------------------------------------------
   // Data yang dibaca tampilan
@@ -52,7 +55,11 @@ class MonitorProvider extends ChangeNotifier {
   String? get connectionError => _connectionError;
   bool get isMock => _settings.useMockData;
   bool get supportsHistory => _repository?.supportsHistory ?? false;
-  String get modeLabel => isMock ? 'Mode Demo' : 'Mode Asli';
+  String get modeLabel =>
+      _repository?.modeLabel ??
+      (_settings.isEsp32Mode
+          ? 'ESP32 (${_settings.esp32Ip})'
+          : (_settings.useMockData ? 'Mode Demo' : 'Mode Asli'));
   String get deviceId => _settings.deviceId;
   String get deviceName => _latest?.deviceName ?? 'MONU Node';
   DemoScenario get scenario => _scenario;
@@ -117,7 +124,7 @@ class MonitorProvider extends ChangeNotifier {
   // ---------------------------------------------------------------------
 
   String _sourceKey() =>
-      '${_settings.useMockData}|${_settings.databaseUrl}|${_settings.deviceId}';
+      '${_settings.connectionMode}|${_settings.esp32Ip}|${_settings.useMockData}|${_settings.databaseUrl}|${_settings.deviceId}';
 
   void _onSettingsChanged() {
     if (_disposed || !_settings.loaded) return;
@@ -144,9 +151,15 @@ class MonitorProvider extends ChangeNotifier {
     _active.clear();
     _offlineAlert = null;
     _connectionError = null;
+    _lastPumpActive = null;
 
     final SensorRepository repo;
-    if (_settings.useMockData) {
+    if (_settings.isEsp32Mode) {
+      repo = Esp32SensorRepository(
+        ipAddress: _settings.esp32Ip,
+        deviceId: _settings.deviceId,
+      );
+    } else if (_settings.useMockData) {
       final MockSensorRepository mock =
           MockSensorRepository(deviceId: _settings.deviceId);
       mock.scenario = _scenario;
@@ -213,6 +226,31 @@ class MonitorProvider extends ChangeNotifier {
     final Evaluation eval =
         StatusEvaluator.evaluate(snapshot, _settings.thresholdFor);
     _evaluation = eval;
+
+    // Deteksi perubahan kondisi pompa air / relay untuk notifikasi
+    if (_lastPumpActive != null) {
+      if (!_lastPumpActive! && snapshot.pumpActive) {
+        // Penyiraman otomatis dimulai
+        final AlertEvent wateringStart = AlertEvent(
+          id: ++_alertSeq,
+          kind: AlertKind.wateringStarted,
+          level: SensorLevel.warning,
+          startedAt: snapshot.timestamp,
+        );
+        _alerts.insert(0, wateringStart);
+      } else if (_lastPumpActive! && !snapshot.pumpActive) {
+        // Penyiraman selesai
+        final AlertEvent wateringEnd = AlertEvent(
+          id: ++_alertSeq,
+          kind: AlertKind.wateringFinished,
+          level: SensorLevel.normal,
+          startedAt: snapshot.timestamp,
+          resolvedAt: snapshot.timestamp,
+        );
+        _alerts.insert(0, wateringEnd);
+      }
+    }
+    _lastPumpActive = snapshot.pumpActive;
 
     _updateOfflineAlert();
     _updateSensorAlerts(snapshot, eval);
@@ -316,9 +354,22 @@ class MonitorProvider extends ChangeNotifier {
       );
       _offlineAlert = created;
       _alerts.insert(0, created);
+      _wasOffline = true;
     } else if (!offline && _offlineAlert != null) {
       _offlineAlert!.resolvedAt = DateTime.now();
       _offlineAlert = null;
+      if (_wasOffline) {
+        // Notifikasi koneksi ESP32 berhasil kembali
+        final AlertEvent backOnline = AlertEvent(
+          id: ++_alertSeq,
+          kind: AlertKind.deviceOnline,
+          level: SensorLevel.normal,
+          startedAt: DateTime.now(),
+          resolvedAt: DateTime.now(),
+        );
+        _alerts.insert(0, backOnline);
+        _wasOffline = false;
+      }
     }
   }
 

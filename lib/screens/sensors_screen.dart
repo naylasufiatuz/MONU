@@ -80,6 +80,59 @@ class SensorsScreen extends StatelessWidget {
                           ),
                         ),
                       ),
+
+                    // Status Aktuator Pompa Air & Relay (GPIO 19)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 16),
+                      child: GlassCard(
+                        padding: const EdgeInsets.all(16),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 44,
+                              height: 44,
+                              decoration: BoxDecoration(
+                                color: (monitor.latest?.pumpActive == true
+                                        ? AppColors.safe
+                                        : AppColors.inkSoft)
+                                    .withValues(alpha: 0.15),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Icon(
+                                Icons.water_drop,
+                                color: monitor.latest?.pumpActive == true
+                                    ? AppColors.safe
+                                    : AppColors.inkSoft,
+                                size: 24,
+                              ),
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('Pompa Air (Relay GPIO 19)', style: AppText.title),
+                                  Text(
+                                    monitor.latest?.pumpActive == true
+                                        ? 'Penyiraman sedang aktif'
+                                        : 'Standby / Tidak menyiram',
+                                    style: AppText.caption,
+                                  ),
+                                ],
+                              ),
+                            ),
+                            StatusChip(
+                              label: monitor.latest?.pumpActive == true
+                                  ? 'MENYIRAM (ON)'
+                                  : 'OFF',
+                              color: monitor.latest?.pumpActive == true
+                                  ? AppColors.safe
+                                  : AppColors.inkSoft,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                     GlassCard(
                       showShadow: false,
                       padding: const EdgeInsets.all(14),

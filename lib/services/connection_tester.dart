@@ -27,6 +27,107 @@ class ConnectionTestResult {
 class ConnectionTester {
   ConnectionTester._();
 
+  /// Memvalidasi format alamat IP (IPv4) atau hostname
+  static bool isValidIp(String input) {
+    final String clean = input.trim().replaceAll('http://', '').replaceAll('/', '');
+    if (clean.isEmpty) return false;
+    if (clean == 'localhost' || clean.endsWith('.local')) return true;
+
+    final RegExp ipv4Regex = RegExp(
+      r'^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.'
+      r'(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.'
+      r'(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.'
+      r'(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$',
+    );
+    return ipv4Regex.hasMatch(clean);
+  }
+
+  /// Menguji koneksi langsung ke ESP32 melalui endpoint `GET http://<IP_ESP32>/api/status`
+  static Future<ConnectionTestResult> testEsp32({
+    required String ipAddress,
+  }) async {
+    String clean = ipAddress.trim();
+    if (clean.startsWith('http://')) {
+      clean = clean.substring(7);
+    } else if (clean.startsWith('https://')) {
+      clean = clean.substring(8);
+    }
+    while (clean.endsWith('/')) {
+      clean = clean.substring(0, clean.length - 1);
+    }
+
+    if (clean.isEmpty) {
+      return const ConnectionTestResult(
+        outcome: TestOutcome.failure,
+        message: 'Tidak Terhubung',
+        detail: 'IP Address ESP32 belum diisi.',
+      );
+    }
+
+    if (!isValidIp(clean)) {
+      return const ConnectionTestResult(
+        outcome: TestOutcome.failure,
+        message: 'Format IP Address tidak valid',
+        detail: 'Masukkan alamat IPv4 yang sesuai, contoh: 192.168.1.100',
+      );
+    }
+
+    final Uri uri = Uri.parse('http://$clean/api/status');
+    try {
+      final http.Response res =
+          await http.get(uri).timeout(const Duration(seconds: 4));
+
+      if (res.statusCode != 200) {
+        return ConnectionTestResult(
+          outcome: TestOutcome.failure,
+          message: 'Tidak Terhubung (HTTP ${res.statusCode})',
+          detail: 'ESP32 merespons dengan kode error ${res.statusCode}.',
+        );
+      }
+
+      final dynamic data = jsonDecode(res.body);
+      if (data == null || data is! Map) {
+        return const ConnectionTestResult(
+          outcome: TestOutcome.failure,
+          message: 'Format data tidak sesuai',
+          detail: 'Respons dari ESP32 bukan format JSON yang valid.',
+        );
+      }
+
+      final dynamic wifi = data['wifi'];
+      final bool isWifiConnected = data['wifi_connected'] == true ||
+          (wifi is Map && (wifi['connected'] == true || wifi['status'] == 'terhubung')) ||
+          data['device_status'] == 'online' ||
+          data['status'] == 'online';
+
+      final String actualIp = (wifi is Map ? wifi['ip_address']?.toString() : null) ??
+          data['ip_address']?.toString() ??
+          clean;
+      final String deviceName = (data['device_name'] ?? data['device_id'] ?? 'ESP32 Node').toString();
+      final String uptime = data['uptime_human']?.toString() ?? '-';
+
+      if (!isWifiConnected) {
+        return ConnectionTestResult(
+          outcome: TestOutcome.warning,
+          message: 'Terhubung Sebagian (Wi-Fi ESP32 Terputus)',
+          detail: 'Berhasil menghubungi ESP32, namun status jaringan ESP32 terputus.',
+        );
+      }
+
+      return ConnectionTestResult(
+        outcome: TestOutcome.success,
+        message: 'Terhubung',
+        detail: 'Berhasil terhubung ke $deviceName ($actualIp) • Uptime: $uptime',
+      );
+    } catch (error) {
+      return ConnectionTestResult(
+        outcome: TestOutcome.failure,
+        message: 'Tidak Terhubung',
+        detail: describeRepositoryError(error),
+      );
+    }
+  }
+
   static Future<ConnectionTestResult> test({
     required String databaseUrl,
     required String deviceId,

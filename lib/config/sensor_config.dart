@@ -87,6 +87,24 @@ class SensorConfig {
       limitation:
           'Perlu pemanasan awal dan kalibrasi, serta bisa merespons zat lain. Bukan bukti pasti kebakaran.',
     ),
+    SensorSpec(
+      id: 'thermocouple',
+      name: 'Thermocouple (MAX6675)',
+      shortName: 'Thermo',
+      unit: '°C',
+      icon: Icons.thermostat_outlined,
+      decimals: 1,
+      direction: ThresholdDirection.high,
+      defaultThreshold: AlertLimit(warning: 50, check: 70),
+      minValue: 0,
+      maxValue: 1024,
+      description:
+          'Sensor thermocouple MAX6675 mengukur suhu pada titik kontak probe tipe K.',
+      interpretation:
+          'Suhu tinggi menunjukkan kenaikan panas intensif pada titik pengukuran.',
+      limitation:
+          'Mengukur titik kontak thermocouple, bukan suhu udara seluruh ruangan.',
+    ),
   ];
 
   static SensorSpec byId(String id) => all.firstWhere((s) => s.id == id);

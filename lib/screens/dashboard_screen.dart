@@ -383,7 +383,9 @@ class _SensorGrid extends StatelessWidget {
     }
     return Column(children: rows);
   }
-  class _AssistantCard extends StatelessWidget {
+}
+
+class _AssistantCard extends StatelessWidget {
   const _AssistantCard({required this.onTap});
 
   final VoidCallback onTap;
@@ -424,5 +426,4 @@ class _SensorGrid extends StatelessWidget {
       ),
     );
   }
-}
 }

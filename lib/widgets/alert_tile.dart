@@ -32,9 +32,14 @@ class AlertTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final Color color = event.level.color;
     final DateTime now = DateTime.now();
-    final IconData icon = event.kind == AlertKind.deviceOffline
-        ? Icons.wifi_off
-        : event.level.icon;
+    final IconData icon = switch (event.kind) {
+      AlertKind.deviceOffline => Icons.wifi_off,
+      AlertKind.deviceOnline => Icons.wifi,
+      AlertKind.wateringStarted => Icons.water_drop,
+      AlertKind.wateringFinished => Icons.check_circle_outline,
+      AlertKind.drySoil => Icons.grass,
+      _ => event.level.icon,
+    };
 
     final double? peak = event.peakValue;
     final bool showPeak = !compact &&

@@ -10,6 +10,11 @@ class DeviceSnapshot {
     required this.timestamp,
     required this.values,
     this.soilMoisturePercent,
+    this.relayActive = false,
+    this.pumpActive = false,
+    this.isWifiConnected = true,
+    this.esp32Ip,
+    this.deviceStatus = 'online',
   });
 
   final String deviceId;
@@ -24,6 +29,21 @@ class DeviceSnapshot {
   /// Opsional: persen kelembapan tanah setelah kalibrasi.
   final double? soilMoisturePercent;
 
+  /// Status relay pompa air.
+  final bool relayActive;
+
+  /// Status pompa air (mengikuti aktivasi relay).
+  final bool pumpActive;
+
+  /// Status Wi-Fi pada ESP32.
+  final bool isWifiConnected;
+
+  /// IP Address aktual ESP32.
+  final String? esp32Ip;
+
+  /// Status perangkat ('online' / 'disconnected').
+  final String deviceStatus;
+
   double? valueOf(String sensorId) => values[sensorId];
 
   bool get hasMissing {
@@ -33,9 +53,7 @@ class DeviceSnapshot {
     return false;
   }
 
-  /// Membaca data JSON dari database.
-  /// Mendukung bentuk bersarang (devices/{id}: { sensors: {...} })
-  /// dan bentuk datar (history/{id}/{pushId}: { temperature: ... }).
+  /// Membaca data JSON dari database Firebase / Mock.
   factory DeviceSnapshot.fromMap(String deviceId, Map<dynamic, dynamic> map) {
     final dynamic rawSensors = map['sensors'];
     final Map<dynamic, dynamic> source =
@@ -45,12 +63,131 @@ class DeviceSnapshot {
       for (final SensorSpec s in SensorConfig.all) s.id: _toDouble(source[s.id]),
     };
 
+    final dynamic relayVal = map['relay'] ?? source['relay'];
+    final bool isRelay = relayVal == 1 || relayVal == true || relayVal == 'ON';
+
     return DeviceSnapshot(
       deviceId: deviceId,
-      deviceName: (map['name'] ?? deviceId).toString(),
+      deviceName: (map['name'] ?? map['device_name'] ?? deviceId).toString(),
       timestamp: _toTime(map['updatedAt'] ?? map['timestamp']),
       values: values,
       soilMoisturePercent: _toDouble(source['soilMoisturePercent']),
+      relayActive: isRelay,
+      pumpActive: isRelay,
+      isWifiConnected: map['wifi_connected'] != false,
+      esp32Ip: map['ip_address']?.toString(),
+      deviceStatus: (map['device_status'] ?? map['status'] ?? 'online').toString(),
+    );
+  }
+
+  /// Membaca data JSON langsung dari respons HTTP ESP32 (/api/status).
+  factory DeviceSnapshot.fromEsp32Map(String fallbackDeviceId, Map<dynamic, dynamic> map) {
+    final String deviceId = (map['device_id'] ?? fallbackDeviceId).toString();
+    final String deviceName = (map['device_name'] ?? 'ESP32 MONU Node').toString();
+    final DateTime timestamp = DateTime.now();
+
+    final dynamic rawSensors = map['sensors'];
+    final Map<dynamic, dynamic> sensorMap =
+        rawSensors is Map ? rawSensors : <dynamic, dynamic>{};
+
+    double? temp;
+    double? hum;
+    double? soilRaw;
+    double? mq2Raw;
+    double? thermo;
+
+    // 1. DHT11
+    final dynamic dht = sensorMap['dht11'] ?? map['dht11'];
+    if (dht is Map) {
+      if (dht['status'] != 'belum_tersedia') {
+        temp = _toDouble(dht['temperature']);
+        hum = _toDouble(dht['humidity']);
+      }
+    } else {
+      temp = _toDouble(map['temperature']);
+      hum = _toDouble(map['humidity']);
+    }
+
+    // 2. Soil Moisture
+    final dynamic soil =
+        sensorMap['soil_moisture'] ?? map['soil_moisture'] ?? map['soilMoistureRaw'];
+    if (soil is Map) {
+      if (soil['status'] != 'belum_tersedia') {
+        soilRaw = _toDouble(soil['raw_adc'] ?? soil['value']);
+      }
+    } else {
+      soilRaw = _toDouble(soil);
+    }
+
+    // 3. MQ-2
+    final dynamic mq2 =
+        sensorMap['mq2'] ?? map['mq2'] ?? map['mq2Raw'];
+    if (mq2 is Map) {
+      if (mq2['status'] != 'belum_tersedia') {
+        mq2Raw = _toDouble(mq2['raw_adc'] ?? mq2['value']);
+      }
+    } else {
+      mq2Raw = _toDouble(mq2);
+    }
+
+    // 4. Thermocouple
+    final dynamic thermoData =
+        sensorMap['thermocouple'] ?? map['thermocouple'];
+    if (thermoData is Map) {
+      if (thermoData['status'] != 'belum_tersedia') {
+        thermo = _toDouble(thermoData['temperature'] ?? thermoData['value']);
+      }
+    } else {
+      thermo = _toDouble(thermoData);
+    }
+
+    final Map<String, double?> values = {
+      'temperature': temp,
+      'humidity': hum,
+      'soilMoistureRaw': soilRaw,
+      'mq2Raw': mq2Raw,
+      'thermocouple': thermo,
+    };
+
+    // Relay & Pompa Air
+    final dynamic actuators = map['actuators'];
+    final dynamic relayData = (actuators is Map) ? actuators['relay'] : map['relay'];
+    bool isRelayOn = false;
+    if (relayData is Map) {
+      final dynamic state = relayData['state'];
+      isRelayOn = state == 1 || state == true || relayData['state_label'] == 'ON';
+    } else if (relayData != null) {
+      isRelayOn = relayData == 1 || relayData == true || relayData == 'ON';
+    }
+
+    // Status Jaringan
+    final dynamic wifi = map['wifi'];
+    final bool wifiOk = map['wifi_connected'] == true ||
+        (wifi is Map && (wifi['connected'] == true || wifi['status'] == 'terhubung')) ||
+        map['device_status'] == 'online' ||
+        map['status'] == 'online';
+    final String? ip = (wifi is Map ? wifi['ip_address']?.toString() : null) ??
+        map['ip_address']?.toString();
+
+    // Persen Kelembapan Tanah (jika raw tersedia)
+    double? soilPercent;
+    if (soilRaw != null) {
+      soilPercent =
+          ((3300 - soilRaw) / (3300 - 1300) * 100).clamp(0, 100).toDouble();
+      soilPercent = double.parse(soilPercent.toStringAsFixed(0));
+    }
+
+    return DeviceSnapshot(
+      deviceId: deviceId,
+      deviceName: deviceName,
+      timestamp: timestamp,
+      values: values,
+      soilMoisturePercent: soilPercent,
+      relayActive: isRelayOn,
+      pumpActive: isRelayOn,
+      isWifiConnected: wifiOk,
+      esp32Ip: ip,
+      deviceStatus: (map['device_status'] ?? map['status'] ?? (wifiOk ? 'online' : 'offline')).toString(),
     );
   }
 

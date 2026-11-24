@@ -102,13 +102,14 @@ class MockSensorRepository implements SensorRepository {
   Map<String, double> _targetFor(DemoScenario s) {
     switch (s) {
       case DemoScenario.warning:
-        return {..._baseNow(), 'temperature': 37.0};
+        return {..._baseNow(), 'temperature': 37.0, 'thermocouple': 55.0};
       case DemoScenario.check:
         return const {
           'temperature': 41.5,
           'humidity': 27,
           'soilMoistureRaw': 3400,
           'mq2Raw': 2700,
+          'thermocouple': 75.0,
         };
       case DemoScenario.normal:
       case DemoScenario.sensorFail:
@@ -121,6 +122,7 @@ class MockSensorRepository implements SensorRepository {
         'temperature' => 0.25,
         'humidity' => 1.0,
         'soilMoistureRaw' => 25.0,
+        'thermocouple' => 0.5,
         _ => 30.0,
       };
 
@@ -161,6 +163,10 @@ class MockSensorRepository implements SensorRepository {
       'mq2Raw': _round(
         550 + 70 * math.sin(ms / 50000) + 40 * math.sin(ms / 21000),
         0,
+      ),
+      'thermocouple': _round(
+        31.0 + 3.0 * daily + 0.5 * math.sin(ms / 85000),
+        1,
       ),
     };
 

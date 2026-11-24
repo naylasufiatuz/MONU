@@ -21,6 +21,12 @@ class IotConfig {
   /// ISI DI SINI: ID perangkat. Harus sama dengan yang dipakai ESP32.
   static const String deviceId = 'monu-node-1';
 
+  /// ISI DI SINI: IP Address default ESP32 untuk koneksi langsung.
+  static const String defaultEsp32Ip = '192.168.1.100';
+
+  /// Interval polling untuk pengambilan data langsung dari ESP32 (2 detik).
+  static const Duration esp32PollInterval = Duration(seconds: 2);
+
   // ------------------------------------------------------------
 
   /// Lokasi data terbaru di database: devices/{deviceId}

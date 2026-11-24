@@ -173,21 +173,26 @@ class GeminiEngine implements AssistantEngine {
     }
   }
 
-  String _httpError(int code, dynamic json, String modelName) {
+    String _httpError(int code, dynamic json, String modelName) {
     String message = '';
+    String status = '';
     if (json is Map && json['error'] is Map) {
       message = (json['error']['message'] ?? '').toString();
+      status = (json['error']['status'] ?? '').toString();
     }
+    if (message.length > 220) message = '${message.substring(0, 220)}…';
+    final String detail =
+        message.isEmpty ? '' : ' Pesan dari Google: "$message" ($status).';
     final String lower = message.toLowerCase();
 
     if (code == 400 && (lower.contains('api key') || lower.contains('api_key'))) {
-      return 'Kunci API tidak valid. Periksa lagi kunci yang kamu tempel.';
+      return 'Kunci API tidak valid (kode 400).$detail Pastikan kunci disalin utuh, tanpa spasi.';
     }
     if (code == 401 || code == 403) {
-      return 'Kunci API ditolak atau tidak punya akses ke model ini. Buat kunci baru di Google AI Studio.';
+      return 'Kunci ditolak (kode $code).$detail Pastikan kunci dibuat lewat "Create API key" di aistudio.google.com/apikey, disalin utuh, dan akun Google-mu boleh memakai Gemini API.';
     }
     if (code == 404) {
-      return 'Model "$modelName" tidak ditemukan. Ganti nama model di pengaturan AI (coba gemini-flash-latest).';
+      return 'Model "$modelName" tidak ditemukan. Ganti nama model di pengaturan AI (coba gemini-3.6-flash).';
     }
     if (code == 429) {
       return 'Batas pemakaian gratis Gemini sedang tercapai. Tunggu sebentar lalu coba lagi.';
@@ -195,6 +200,6 @@ class GeminiEngine implements AssistantEngine {
     if (code >= 500) {
       return 'Server Gemini sedang sibuk. Coba lagi sebentar.';
     }
-    return message.isEmpty ? 'Gemini membalas dengan kode $code.' : 'Gemini: $message';
+    return 'Gemini membalas dengan kode $code.$detail';
   }
 }
