@@ -4,7 +4,7 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.14.0
+  sdk: '>=3.13.0 <4.0.0'
 
 dependencies:
   flutter:
@@ -28,6 +28,9 @@ dependencies:
   firebase_core: ^5.1.0
   firebase_auth: ^7.0.1
   firebase_database: ^13.0.1
+
+  # Supabase (Database Postgres, Auth, Realtime)
+  supabase_flutter: ^2.8.0
 
   # Notifikasi di HP
   flutter_local_notifications: ^23.0.0

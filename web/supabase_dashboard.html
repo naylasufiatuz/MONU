@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MONU DiHutan - Dashboard Monitoring IoT & AI (Supabase Realtime)</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    :root {
+      --bg: #0b1a14;
+      --card-bg: rgba(22, 43, 34, 0.85);
+      --card-border: rgba(46, 125, 90, 0.35);
+      --forest: #2e7d5a;
+      --forest-light: #52b788;
+      --text: #e8f5e9;
+      --text-muted: #a3c2b0;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body {
+      background: radial-gradient(circle at 15% 15%, #183d2e 0%, var(--bg) 100%);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--card-border);
+    }
+    .header h1 { font-size: 24px; color: var(--forest-light); display: flex; align-items: center; gap: 10px; }
+    .badge {
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 600;
+      background: rgba(46, 125, 90, 0.25);
+      border: 1px solid var(--forest-light);
+      color: var(--forest-light);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 18px;
+      margin-bottom: 28px;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 20px;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+    }
+    .card .label { font-size: 13px; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .card .value { font-size: 32px; font-weight: 700; color: #ffffff; }
+    .card .unit { font-size: 16px; font-weight: normal; color: var(--text-muted); margin-left: 4px; }
+    .card .status-indicator { font-size: 12px; margin-top: 8px; color: var(--forest-light); }
+    .table-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 20px;
+      overflow-x: auto;
+    }
+    table { width: 100%; border-collapse: collapse; text-align: left; }
+    th, td { padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 14px; }
+    th { color: var(--text-muted); font-size: 12px; text-transform: uppercase; }
+    .online { color: var(--forest-light); }
+    .relay-on { color: var(--warning); font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>🌲 MONU DiHutan • Web Dashboard</h1>
+      <p style="color: var(--text-muted); font-size: 14px; margin-top: 4px;">Tersambung langsung ke Supabase PostgreSQL & AI Telemetri</p>
+    </div>
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <a href="ai_chatbot.html" target="_blank" style="text-decoration:none; display:inline-flex; align-items:center; gap:8px; padding:8px 16px; border-radius:999px; background:linear-gradient(135deg, #2e7d5a, #4ade80); color:#0b1a14; font-weight:700; font-size:13px; box-shadow:0 4px 12px rgba(74,222,128,0.3); transition: transform 0.2s;">
+        💬 Tanya Asisten AI (Gemini)
+      </a>
+      <div id="connStatus" class="badge">Menghubungkan Supabase...</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="label">Suhu Udara (DHT11)</div>
+      <div class="value"><span id="valTemp">--</span><span class="unit">°C</span></div>
+      <div class="status-indicator" id="subTemp">Memuat data...</div>
+    </div>
+    <div class="card">
+      <div class="label">Kelembapan Udara (DHT11)</div>
+      <div class="value"><span id="valHum">--</span><span class="unit">%</span></div>
+      <div class="status-indicator" id="subHum">Memuat data...</div>
+    </div>
+    <div class="card">
+      <div class="label">Kelembapan Tanah</div>
+      <div class="value"><span id="valSoil">--</span><span class="unit">%</span></div>
+      <div class="status-indicator" id="subSoil">Raw ADC: <span id="valSoilRaw">--</span></div>
+    </div>
+    <div class="card">
+      <div class="label">Sensor Gas/Asap (MQ-2)</div>
+      <div class="value"><span id="valMq2">--</span><span class="unit">ADC</span></div>
+      <div class="status-indicator" id="subMq2">Kondisi Udara Normal</div>
+    </div>
+    <div class="card">
+      <div class="label">Thermocouple K-Type</div>
+      <div class="value"><span id="valThermo">--</span><span class="unit">°C</span></div>
+      <div class="status-indicator" id="subThermo">MAX6675</div>
+    </div>
+    <div class="card">
+      <div class="label">Status Pompa / Relay</div>
+      <div class="value" id="valPump">OFF</div>
+      <div class="status-indicator" id="subPump">Otomatisasi ESP32</div>
+    </div>
+  </div>
+
+  <div class="table-card">
+    <h3 style="margin-bottom: 16px; color: var(--forest-light);">Riwayat Pembacaan Sensor Terbaru (Realtime)</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Waktu (WIB)</th>
+          <th>Device ID</th>
+          <th>Suhu</th>
+          <th>Kelembapan</th>
+          <th>Tanah</th>
+          <th>Gas MQ-2</th>
+          <th>Relay</th>
+        </tr>
+      </thead>
+      <tbody id="historyBody">
+        <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Menunggu data dari Supabase...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    const SUPABASE_URL = 'https://nhtyfguvhqsiuljhqzqb.supabase.co';
+    const SUPABASE_ANON_KEY = 'sb_publishable_ZKNFGue6e70A7aTVH71D_g_4gnMc20T';
+    const client = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    const statusBadge = document.getElementById('connStatus');
+
+    function updateUI(item) {
+      if (!item) return;
+      document.getElementById('valTemp').textContent = item.temperature ?? '--';
+      document.getElementById('valHum').textContent = item.humidity ?? '--';
+      document.getElementById('valSoil').textContent = item.soil_moisture_percent ?? '--';
+      document.getElementById('valSoilRaw').textContent = item.soil_moisture_raw ?? '--';
+      document.getElementById('valMq2').textContent = item.mq2_raw ?? '--';
+      document.getElementById('valThermo').textContent = item.thermocouple ?? '--';
+      
+      const pumpActive = item.pump_active || item.relay_active;
+      const pumpEl = document.getElementById('valPump');
+      pumpEl.textContent = pumpActive ? 'MENYIRAM (ON)' : 'STANDBY (OFF)';
+      pumpEl.className = pumpActive ? 'value relay-on' : 'value';
+
+      statusBadge.textContent = '🟢 Supabase Realtime Aktif';
+      statusBadge.style.color = '#52b788';
+      statusBadge.style.borderColor = '#52b788';
+    }
+
+    async function loadInitial() {
+      try {
+        const { data, error } = await client
+          .from('sensor_readings')
+          .select()
+          .order('created_at', { ascending: false })
+          .limit(10);
+
+        if (error) throw error;
+        if (data && data.length > 0) {
+          updateUI(data[0]);
+          renderTable(data);
+        } else {
+          statusBadge.textContent = '🟡 Menunggu Data ESP32...';
+        }
+      } catch (err) {
+        console.error(err);
+        statusBadge.textContent = '🔴 Gagal Terhubung Database';
+      }
+    }
+
+    function renderTable(list) {
+      const tbody = document.getElementById('historyBody');
+      tbody.innerHTML = list.map(row => `
+        <tr>
+          <td>${new Date(row.created_at).toLocaleTimeString('id-ID')}</td>
+          <td>${row.device_id || 'monu-node-1'}</td>
+          <td>${row.temperature ? row.temperature + ' °C' : '-'}</td>
+          <td>${row.humidity ? row.humidity + ' %' : '-'}</td>
+          <td>${row.soil_moisture_percent ? row.soil_moisture_percent + ' %' : (row.soil_moisture_raw || '-')}</td>
+          <td>${row.mq2_raw || '-'}</td>
+          <td class="${(row.relay_active || row.pump_active) ? 'relay-on' : ''}">${(row.relay_active || row.pump_active) ? 'ON' : 'OFF'}</td>
+        </tr>
+      `).join('');
+    }
+
+    // Dengarkan perubahan realtime Supabase
+    client
+      .channel('sensor-realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sensor_readings' }, payload => {
+        updateUI(payload.new);
+        loadInitial();
+      })
+      .subscribe();
+
+    loadInitial();
+  </script>
+</body>
+</html>

@@ -40,7 +40,7 @@ class PageHeader extends StatelessWidget {
               ],
             ),
           ),
-          if (trailing != null) trailing!,
+          ?trailing,
         ],
       ),
     );
@@ -84,7 +84,7 @@ class SectionTitle extends StatelessWidget {
           Expanded(
             child: Text(title, style: AppText.title.copyWith(fontSize: 16)),
           ),
-          if (trailing != null) trailing!,
+          ?trailing,
         ],
       ),
     );

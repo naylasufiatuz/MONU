@@ -1,0 +1,820 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MONU AI Chatbot - Ditenagai Google Gemini</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    :root {
+      --bg: #091510;
+      --card-bg: rgba(18, 38, 28, 0.82);
+      --card-border: rgba(46, 125, 90, 0.35);
+      --forest-dark: #12281e;
+      --forest: #205c41;
+      --forest-primary: #2e7d5a;
+      --forest-light: #4ade80;
+      --text: #f1f5f3;
+      --text-muted: #94a89d;
+      --user-bubble: #1c4b37;
+      --bot-bubble: rgba(27, 49, 39, 0.95);
+      --danger: #ef4444;
+      --warning: #f59e0b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body {
+      background: radial-gradient(circle at 10% 10%, #153828 0%, var(--bg) 100%);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 16px;
+    }
+    .app-container {
+      width: 100%;
+      max-width: 900px;
+      height: 94vh;
+      background: var(--card-bg);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid var(--card-border);
+      border-radius: 20px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+    }
+    /* Header */
+    .chat-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--card-border);
+      background: rgba(15, 31, 23, 0.7);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .title-box {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .bot-avatar-header {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #2e7d5a, #4ade80);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      box-shadow: 0 4px 12px rgba(74, 222, 128, 0.3);
+    }
+    .title-box h1 {
+      font-size: 18px;
+      color: #fff;
+      font-weight: 700;
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--forest-light);
+      background: rgba(74, 222, 128, 0.12);
+      padding: 2px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(74, 222, 128, 0.25);
+    }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .select-model {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--card-border);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      outline: none;
+      cursor: pointer;
+    }
+    .select-model option {
+      background: #12281e;
+      color: #fff;
+    }
+    .btn-icon {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--card-border);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+    }
+    .btn-icon:hover {
+      background: rgba(255, 255, 255, 0.15);
+      color: #fff;
+    }
+
+    /* Settings Banner (Collapsible) */
+    .settings-panel {
+      display: none;
+      background: rgba(10, 24, 18, 0.95);
+      border-bottom: 1px solid var(--card-border);
+      padding: 16px 20px;
+      font-size: 13px;
+      gap: 12px;
+    }
+    .settings-panel.active {
+      display: flex;
+      flex-direction: column;
+    }
+    .settings-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .settings-row label {
+      width: 110px;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+    .settings-row input[type="text"], .settings-row input[type="password"] {
+      flex: 1;
+      min-width: 260px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      color: #fff;
+      font-size: 13px;
+      outline: none;
+    }
+
+    /* Messages Area */
+    .chat-messages {
+      flex: 1;
+      padding: 20px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      scroll-behavior: smooth;
+    }
+    .message-row {
+      display: flex;
+      gap: 12px;
+      max-width: 82%;
+    }
+    .message-row.user {
+      align-self: flex-end;
+      flex-direction: row-reverse;
+    }
+    .message-row.bot {
+      align-self: flex-start;
+    }
+    .bubble-avatar {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      flex-shrink: 0;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid var(--card-border);
+    }
+    .message-row.bot .bubble-avatar {
+      background: linear-gradient(135deg, #1b5e20, #2e7d5a);
+      border-color: var(--forest-light);
+    }
+    .bubble-content {
+      padding: 12px 18px;
+      border-radius: 18px;
+      line-height: 1.55;
+      font-size: 14.5px;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+      word-break: break-word;
+    }
+    .message-row.user .bubble-content {
+      background: linear-gradient(135deg, #1c4b37, #246349);
+      color: #fff;
+      border-bottom-right-radius: 4px;
+      border: 1px solid rgba(74, 222, 128, 0.25);
+    }
+    .message-row.bot .bubble-content {
+      background: var(--bot-bubble);
+      color: var(--text);
+      border-bottom-left-radius: 4px;
+      border: 1px solid var(--card-border);
+    }
+    .bubble-time {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 4px;
+      text-align: right;
+    }
+    .message-row.bot .bubble-time {
+      text-align: left;
+    }
+
+    /* Markdown inside bot bubble */
+    .bubble-content p { margin-bottom: 8px; }
+    .bubble-content p:last-child { margin-bottom: 0; }
+    .bubble-content ul, .bubble-content ol { margin-left: 20px; margin-bottom: 8px; }
+    .bubble-content li { margin-bottom: 4px; }
+    .bubble-content strong { color: var(--forest-light); font-weight: 600; }
+    .bubble-content pre {
+      background: rgba(0, 0, 0, 0.4);
+      padding: 10px;
+      border-radius: 8px;
+      overflow-x: auto;
+      margin: 8px 0;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      font-family: monospace;
+      font-size: 13px;
+    }
+    .bubble-content code {
+      background: rgba(0, 0, 0, 0.3);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 13px;
+      color: #a7f3d0;
+    }
+
+    /* Typing Dots Animation */
+    .typing-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 8px 14px;
+    }
+    .typing-dot {
+      width: 8px;
+      height: 8px;
+      background: var(--forest-light);
+      border-radius: 50%;
+      animation: pulse 1.4s infinite ease-in-out both;
+    }
+    .typing-dot:nth-child(1) { animation-delay: -0.32s; }
+    .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+    @keyframes pulse {
+      0%, 80%, 100% { transform: scale(0.4); opacity: 0.4; }
+      40% { transform: scale(1); opacity: 1; }
+    }
+
+    /* Suggestions */
+    .suggestions-container {
+      padding: 6px 20px 12px 20px;
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .suggestions-container::-webkit-scrollbar { display: none; }
+    .chip {
+      background: rgba(46, 125, 90, 0.18);
+      border: 1px solid rgba(74, 222, 128, 0.25);
+      color: #d1fae5;
+      padding: 7px 14px;
+      border-radius: 999px;
+      font-size: 12.5px;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .chip:hover {
+      background: rgba(74, 222, 128, 0.25);
+      border-color: var(--forest-light);
+      color: #fff;
+    }
+
+    /* Input Footer */
+    .chat-input-bar {
+      padding: 14px 20px 18px 20px;
+      border-top: 1px solid var(--card-border);
+      background: rgba(14, 28, 21, 0.85);
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+    }
+    .input-wrapper {
+      flex: 1;
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      transition: border-color 0.2s;
+    }
+    .input-wrapper:focus-within {
+      border-color: var(--forest-light);
+      box-shadow: 0 0 12px rgba(74, 222, 128, 0.15);
+    }
+    .chat-textarea {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: #fff;
+      font-size: 14.5px;
+      resize: none;
+      max-height: 120px;
+      min-height: 24px;
+      line-height: 1.4;
+    }
+    .chat-textarea::placeholder {
+      color: var(--text-muted);
+    }
+    .send-btn {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #2e7d5a, #4ade80);
+      border: none;
+      color: #0b1a14;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 18px;
+      font-weight: bold;
+      transition: all 0.2s;
+      flex-shrink: 0;
+    }
+    .send-btn:hover:not(:disabled) {
+      transform: scale(1.05);
+      box-shadow: 0 4px 15px rgba(74, 222, 128, 0.4);
+    }
+    .send-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .footer-note {
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 8px;
+    }
+    .footer-note a {
+      color: var(--forest-light);
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="app-container">
+    <!-- Header -->
+    <header class="chat-header">
+      <div class="title-box">
+        <div class="bot-avatar-header">🌲</div>
+        <div>
+          <h1>MONU Asisten AI</h1>
+          <span class="status-badge" id="aiStatus">
+            <span style="font-size: 8px;">●</span> Gemini AI Siap
+          </span>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <select id="modelSelector" class="select-model" title="Pilih Model Gemini">
+          <option value="gemini-1.5-flash" selected>Gemini 1.5 Flash (Cepat & Stabil)</option>
+          <option value="gemini-2.0-flash">Gemini 2.0 Flash (Terbaru)</option>
+          <option value="gemini-1.5-pro">Gemini 1.5 Pro (Penalaran Dalam)</option>
+        </select>
+        <button class="btn-icon" id="toggleSettingsBtn" title="Pengaturan API Key & Sensor">
+          ⚙️ Kunci & Konfigurasi
+        </button>
+        <button class="btn-icon" id="clearChatBtn" title="Hapus Riwayat Chat">
+          🗑️ Bersihkan
+        </button>
+      </div>
+    </header>
+
+    <!-- Settings Panel (Collapsible) -->
+    <div class="settings-panel" id="settingsPanel">
+      <div class="settings-row">
+        <label>Gemini API Key:</label>
+        <input type="password" id="apiKeyInput" value="" placeholder="Tempel API Key Gemini Anda di sini">
+        <button class="btn-icon" id="toggleKeyVisibility">👁️</button>
+        <button class="btn-icon" id="testApiBtn">⚡ Tes Koneksi</button>
+      </div>
+      <div class="settings-row">
+        <label>Peran AI:</label>
+        <select id="personaSelector" class="select-model" style="flex: 1;">
+          <option value="monu_forest" selected>Asisten MONU IoT Miniatur Hutan (Membaca Sensor & Cuaca)</option>
+          <option value="general_ai">Asisten AI Umum (Percakapan Bebas & Kode)</option>
+        </select>
+      </div>
+      <div class="settings-row">
+        <label>Koneksi Supabase:</label>
+        <span id="supabaseStatus" style="color: var(--text-muted); font-size: 12px;">Menghubungkan ke PostgreSQL...</span>
+      </div>
+    </div>
+
+    <!-- Chat Messages -->
+    <main class="chat-messages" id="messagesList">
+      <!-- Welcome Message -->
+      <div class="message-row bot">
+        <div class="bubble-avatar">🌲</div>
+        <div>
+          <div class="bubble-content">
+            <p><strong>Halo! Saya Asisten AI MONU.</strong></p>
+            <p>Saya ditenagai oleh <strong>Google Gemini AI</strong> menggunakan API Key Anda. Saya siap membantu Anda menganalisis sensor IoT (suhu udara DHT11, kelembapan tanah, gas/asap MQ-2, thermocouple) atau menjawab pertanyaan lainnya seputar teknologi dan lingkungan hutan.</p>
+            <p>Silakan tanyakan sesuatu atau pilih topik di bawah ini!</p>
+          </div>
+          <div class="bubble-time">Baru saja</div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Suggestions Bar -->
+    <div class="suggestions-container" id="suggestionsContainer">
+      <button class="chip" onclick="sendSuggestion('Ringkas kondisi dan status sensor hutan saat ini')">📊 Status Sensor Terkini</button>
+      <button class="chip" onclick="sendSuggestion('Apa bahayanya jika nilai sensor MQ-2 melonjak tinggi?')">🚨 Bahaya Asap & MQ-2</button>
+      <button class="chip" onclick="sendSuggestion('Berapa suhu dan kelembapan ideal untuk miniatur hutan?')">🌡️ Ambang Suhu Ideal</button>
+      <button class="chip" onclick="sendSuggestion('Kapan pompa penyiram air otomatis harus dinyalakan?')">💧 Kontrol Pompa Air</button>
+      <button class="chip" onclick="sendSuggestion('Ceritakan bagaimana sistem IoT MONU ESP32 ini bekerja')">⚙️ Cara Kerja MONU</button>
+    </div>
+
+    <!-- Input Bar -->
+    <footer class="chat-input-bar">
+      <div class="input-wrapper">
+        <textarea
+          id="chatInput"
+          class="chat-textarea"
+          rows="1"
+          placeholder="Tanya Asisten AI MONU... (Tekan Enter untuk kirim, Shift+Enter untuk baris baru)"
+        ></textarea>
+      </div>
+      <button id="sendBtn" class="send-btn" title="Kirim Pesan">➔</button>
+    </footer>
+  </div>
+
+  <div class="footer-note">
+    Ditenagai Google Gemini AI &bull; Proyek IoT Siswa SMK &bull; <a href="supabase_dashboard.html" target="_blank">Buka Dashboard Supabase</a>
+  </div>
+
+  <script>
+    // Konfigurasi Supabase
+    const SUPABASE_URL = "https://nhtyfguvhqsiuljhqzqb.supabase.co";
+    const SUPABASE_ANON = "sb_publishable_ZKNFGue6e70A7aTVH71D_g_4gnMc20T";
+    let supabaseClient = null;
+    let latestSensorData = null;
+
+    try {
+      supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+      initSupabase();
+    } catch (e) {
+      console.warn("Supabase init error:", e);
+    }
+
+    async function initSupabase() {
+      const statusEl = document.getElementById('supabaseStatus');
+      try {
+        const { data, error } = await supabaseClient
+          .from('sensor_readings')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(1);
+
+        if (!error && data && data.length > 0) {
+          latestSensorData = data[0];
+          statusEl.textContent = `🟢 Terhubung! Data terakhir: Suhu ${latestSensorData.temperature || '-'}°C, Asap ${latestSensorData.mq2_raw || '-'}`;
+          statusEl.style.color = '#4ade80';
+        } else {
+          statusEl.textContent = '🟡 Terhubung ke Supabase (Belum ada data sensor)';
+        }
+
+        // Realtime Subscription
+        supabaseClient
+          .channel('ai-telemetry-sync')
+          .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sensor_readings' }, payload => {
+            latestSensorData = payload.new;
+            statusEl.textContent = `🟢 Terhubung! Data baru: Suhu ${latestSensorData.temperature || '-'}°C`;
+          })
+          .subscribe();
+      } catch (err) {
+        statusEl.textContent = '⚪ Mode Offline / Data Lokal';
+      }
+    }
+
+    // Riwayat Percakapan untuk Gemini Multi-turn
+    let conversationHistory = [];
+
+    // Elemen DOM
+    const messagesList = document.getElementById('messagesList');
+    const chatInput = document.getElementById('chatInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const apiKeyInput = document.getElementById('apiKeyInput');
+    const modelSelector = document.getElementById('modelSelector');
+    const personaSelector = document.getElementById('personaSelector');
+    const aiStatus = document.getElementById('aiStatus');
+    const toggleSettingsBtn = document.getElementById('toggleSettingsBtn');
+    const settingsPanel = document.getElementById('settingsPanel');
+    const toggleKeyVisibility = document.getElementById('toggleKeyVisibility');
+    const testApiBtn = document.getElementById('testApiBtn');
+    const clearChatBtn = document.getElementById('clearChatBtn');
+
+    // Load API Key dari localStorage jika tersimpan
+    const savedApiKey = localStorage.getItem('monu_gemini_api_key');
+    if (savedApiKey) {
+      apiKeyInput.value = savedApiKey;
+    }
+    apiKeyInput.addEventListener('input', () => {
+      localStorage.setItem('monu_gemini_api_key', apiKeyInput.value.trim());
+    });
+
+    // Toggle Settings
+    toggleSettingsBtn.addEventListener('click', () => {
+      settingsPanel.classList.toggle('active');
+    });
+
+    toggleKeyVisibility.addEventListener('click', () => {
+      apiKeyInput.type = apiKeyInput.type === 'password' ? 'text' : 'password';
+    });
+
+    // Auto resize textarea
+    chatInput.addEventListener('input', () => {
+      chatInput.style.height = 'auto';
+      chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
+      sendBtn.disabled = !chatInput.value.trim();
+    });
+
+    chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        handleSubmit();
+      }
+    });
+
+    sendBtn.addEventListener('click', handleSubmit);
+
+    clearChatBtn.addEventListener('click', () => {
+      conversationHistory = [];
+      messagesList.innerHTML = `
+        <div class="message-row bot">
+          <div class="bubble-avatar">🌲</div>
+          <div>
+            <div class="bubble-content">
+              <p>Riwayat percakapan telah dibersihkan. Ada yang bisa saya bantu?</p>
+            </div>
+            <div class="bubble-time">Baru saja</div>
+          </div>
+        </div>
+      `;
+    });
+
+    function sendSuggestion(text) {
+      chatInput.value = text;
+      chatInput.style.height = 'auto';
+      handleSubmit();
+    }
+
+    function appendMessage(role, text) {
+      const row = document.createElement('div');
+      row.className = `message-row ${role}`;
+      const timeStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+
+      if (role === 'user') {
+        row.innerHTML = `
+          <div class="bubble-avatar">👤</div>
+          <div>
+            <div class="bubble-content">${escapeHtml(text)}</div>
+            <div class="bubble-time">${timeStr}</div>
+          </div>
+        `;
+      } else {
+        const parsedHtml = marked.parse(text);
+        row.innerHTML = `
+          <div class="bubble-avatar">🌲</div>
+          <div>
+            <div class="bubble-content">${parsedHtml}</div>
+            <div class="bubble-time">${timeStr}</div>
+          </div>
+        `;
+      }
+
+      messagesList.appendChild(row);
+      messagesList.scrollTop = messagesList.scrollHeight;
+    }
+
+    function showTypingIndicator() {
+      const row = document.createElement('div');
+      row.className = 'message-row bot';
+      row.id = 'typingIndicator';
+      row.innerHTML = `
+        <div class="bubble-avatar">🌲</div>
+        <div>
+          <div class="bubble-content typing-indicator">
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+          </div>
+        </div>
+      `;
+      messagesList.appendChild(row);
+      messagesList.scrollTop = messagesList.scrollHeight;
+    }
+
+    function removeTypingIndicator() {
+      const el = document.getElementById('typingIndicator');
+      if (el) el.remove();
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/[&<>"']/g, function(m) {
+        return {
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#039;'
+        }[m];
+      });
+    }
+
+    function buildSystemPrompt() {
+      const persona = personaSelector.value;
+      if (persona === 'general_ai') {
+        return "Kamu adalah asisten AI yang cerdas, ramah, dan membantu dalam Bahasa Indonesia. Jawab secara jelas, terstruktur, dan gunakan markdown bila perlu.";
+      }
+
+      // Persona MONU IoT Hutan
+      let sensorInfo = "Belum ada pembacaan sensor terbaru dari ESP32.";
+      if (latestSensorData) {
+        sensorInfo = `
+DATA SENSOR TERKINI DARI DATABASE SUPABASE:
+- Suhu Udara (DHT11): ${latestSensorData.temperature ?? 'tidak terbaca'} °C
+- Kelembapan Udara (DHT11): ${latestSensorData.humidity ?? 'tidak terbaca'} %RH
+- Kelembapan Tanah Raw ADC: ${latestSensorData.soil_moisture_raw ?? 'tidak terbaca'}
+- Gas / Asap (MQ-2 ADC): ${latestSensorData.mq2_raw ?? 'tidak terbaca'}
+- Thermocouple MAX6675: ${latestSensorData.thermocouple ?? 'tidak terbaca'} °C
+- Status Pompa Air: ${latestSensorData.relay_active || latestSensorData.pump_active ? 'HIDUP (MENYIRAM)' : 'MATI (STANDBY)'}
+- Waktu Data: ${latestSensorData.created_at ?? 'Baru saja'}
+        `.trim();
+      }
+
+      return `
+Kamu adalah "Asisten MONU", asisten AI untuk sistem monitoring IoT miniatur hutan buatan siswa SMK.
+Tugas utamamu adalah membantu pengguna memahami kondisi lingkungan hutan miniatur, interpretasi sensor, dan tindakan pencegahan bahaya.
+
+PENGETAHUAN PERANGKAT:
+1. DHT11: Mengukur suhu (°C) dan kelembapan udara (%RH). Ambang normal: 20-35 °C. Waspada jika > 35 °C.
+2. Soil Moisture (GPIO 35): Mengukur kelembapan tanah. Nilai ADC tinggi menandakan tanah kering.
+3. MQ-2 (GPIO 34): Mengukur gas mudah terbakar & asap. Nilai mentah ADC. Waspada jika nilai naik tajam.
+4. Thermocouple MAX6675: Pengukur suhu tinggi tahan api (K-Type).
+5. Relay Pompa: Mengontrol aliran penyiraman air otomatis.
+
+${sensorInfo}
+
+ATURAN MENJAWAB:
+- Jawab dalam Bahasa Indonesia yang ramah, santai tapi akurat layaknya teknisi IoT yang suportif.
+- Rujuk nilai sensor terkini bila pengguna menanyakan kondisi nyata saat ini.
+- MONU adalah alat pemantau miniatur hutan, bukan penentu mutlak kebakaran hutan nyata. Berikan saran pencegahan yang praktis dan aman.
+      `.trim();
+    }
+
+    async function callGemini(userText) {
+      const apiKey = apiKeyInput.value.trim();
+      const model = modelSelector.value.trim();
+
+      if (!apiKey) {
+        throw new Error("Kunci API Gemini belum diisi. Buka menu 'Kunci & Konfigurasi' untuk mengisi API Key.");
+      }
+
+      // Tambahkan percakapan user ke riwayat
+      conversationHistory.push({
+        role: "user",
+        parts: [{ text: userText }]
+      });
+
+      // Siapkan payload Gemini REST API
+      const systemInstruction = buildSystemPrompt();
+      const payload = {
+        systemInstruction: {
+          parts: [{ text: systemInstruction }]
+        },
+        contents: conversationHistory.slice(-10) // batasi 10 turn terakhir
+      };
+
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        let msg = data?.error?.message || `Kode status HTTP ${response.status}`;
+        if (response.status === 400 && msg.toLowerCase().includes("api key")) {
+          msg = "API Key Gemini tidak valid atau belum aktif. Periksa kembali kunci Anda.";
+        } else if (response.status === 404) {
+          msg = `Model ${model} tidak tersedia untuk API key ini. Coba ganti ke gemini-1.5-flash.`;
+        }
+        throw new Error(msg);
+      }
+
+      const candidate = data.candidates?.[0];
+      if (!candidate || !candidate.content?.parts?.[0]?.text) {
+        if (data.promptFeedback?.blockReason) {
+          throw new Error(`Permintaan diblokir oleh Gemini: ${data.promptFeedback.blockReason}`);
+        }
+        throw new Error("Gemini tidak memberikan jawaban teks.");
+      }
+
+      const botReply = candidate.content.parts[0].text;
+
+      // Simpan balasan model ke riwayat
+      conversationHistory.push({
+        role: "model",
+        parts: [{ text: botReply }]
+      });
+
+      return botReply;
+    }
+
+    async function handleSubmit() {
+      const text = chatInput.value.trim();
+      if (!text) return;
+
+      appendMessage('user', text);
+      chatInput.value = '';
+      chatInput.style.height = 'auto';
+      sendBtn.disabled = true;
+
+      showTypingIndicator();
+      aiStatus.innerHTML = '<span style="color:#f59e0b;">●</span> Gemini sedang berpikir...';
+
+      try {
+        const reply = await callGemini(text);
+        removeTypingIndicator();
+        appendMessage('bot', reply);
+        aiStatus.innerHTML = '<span style="font-size: 8px;">●</span> Gemini AI Siap';
+      } catch (err) {
+        removeTypingIndicator();
+        appendMessage('bot', `⚠️ **Terjadi Kesalahan:** ${err.message}`);
+        aiStatus.innerHTML = '<span style="color:#ef4444;">●</span> Terjadi Gangguan';
+      } finally {
+        sendBtn.disabled = false;
+        chatInput.focus();
+      }
+    }
+
+    // Tombol Tes Koneksi API
+    testApiBtn.addEventListener('click', async () => {
+      const apiKey = apiKeyInput.value.trim();
+      const model = modelSelector.value.trim();
+      if (!apiKey) {
+        alert("Harap isi API Key terlebih dahulu!");
+        return;
+      }
+      testApiBtn.textContent = "Menguji...";
+      testApiBtn.disabled = true;
+
+      try {
+        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: "Tes respon 1 kata: OK" }] }]
+          })
+        });
+        const d = await res.json();
+        if (res.ok) {
+          alert(`✅ Sukses! API Key valid dan model '${model}' siap digunakan.`);
+        } else {
+          alert(`❌ Gagal: ${d?.error?.message || res.statusText}`);
+        }
+      } catch (e) {
+        alert(`❌ Gagal terhubung ke Google: ${e.message}`);
+      } finally {
+        testApiBtn.textContent = "⚡ Tes Koneksi";
+        testApiBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

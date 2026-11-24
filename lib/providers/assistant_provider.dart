@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:monu/config/gemini_config.dart';
 import 'package:monu/providers/monitor_provider.dart';
 import 'package:monu/providers/settings_provider.dart';
 import 'package:monu/services/assistant_context.dart';
@@ -8,13 +9,11 @@ import 'package:monu/services/local_engine.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Mengelola percakapan, pilihan mesin (Gemini atau Mode Contoh), dan kunci API.
-/// Kunci disimpan hanya di perangkat ini, tidak ada di kode.
 class AssistantProvider extends ChangeNotifier {
   AssistantProvider({
-    required MonitorProvider monitor,
-    required SettingsProvider settings,
-  })  : _monitor = monitor,
-        _settings = settings;
+    required this._monitor,
+    required this._settings,
+  });
 
   static const String _kKey = 'ai_api_key';
   static const String _kModel = 'ai_model';
@@ -23,8 +22,8 @@ class AssistantProvider extends ChangeNotifier {
   final SettingsProvider _settings;
 
   SharedPreferences? _prefs;
-  String _apiKey = '';
-  String _model = GeminiEngine.defaultModel;
+  String _apiKey = GeminiConfig.defaultApiKey;
+  String _model = GeminiConfig.defaultModel;
   final List<ChatMessage> _messages = <ChatMessage>[];
   bool _busy = false;
   bool _disposed = false;
@@ -43,8 +42,9 @@ class AssistantProvider extends ChangeNotifier {
   Future<void> load() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     _prefs = prefs;
-    _apiKey = prefs.getString(_kKey) ?? '';
-    _model = prefs.getString(_kModel) ?? GeminiEngine.defaultModel;
+    final String savedKey = prefs.getString(_kKey) ?? '';
+    _apiKey = savedKey.isNotEmpty ? savedKey : GeminiConfig.defaultApiKey;
+    _model = prefs.getString(_kModel) ?? GeminiConfig.defaultModel;
     _notify();
   }
 

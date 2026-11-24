@@ -37,6 +37,15 @@ SERVER_PORT   = 80
 WIFI_CHECK_INTERVAL_MS = 10000
 
 # ==============================================================================
+# 1.1 PENGATURAN SUPABASE CLOUD (POSTGRESQL TELEMETRY)
+# ==============================================================================
+SUPABASE_URL = "https://nhtyfguvhqsiuljhqzqb.supabase.co"
+SUPABASE_KEY = "sb_publishable_ZKNFGue6e70A7aTVH71D_g_4gnMc20T"
+ENABLE_SUPABASE = True
+SUPABASE_SYNC_INTERVAL_MS = 5000  # Kirim data tiap 5 detik
+_last_supabase_sync = 0
+
+# ==============================================================================
 # 2. DEFINISI PIN GPIO (SESUAI SPESIFIKASI SISTEM)
 # ==============================================================================
 # PERINGATAN: Jangan mengubah nomor GPIO tanpa alasan teknis yang jelas.
@@ -687,6 +696,54 @@ def handle_request(client_socket):
         gc.collect()
 
 
+def sync_to_supabase(status):
+    """
+    Mengirim data sensor ke Supabase REST API (PostgreSQL).
+    """
+    global _last_supabase_sync
+    if not ENABLE_SUPABASE:
+        return
+    now = time.ticks_ms()
+    if time.ticks_diff(now, _last_supabase_sync) < SUPABASE_SYNC_INTERVAL_MS:
+        return
+    _last_supabase_sync = now
+
+    try:
+        import urequests
+        sensors = status.get("sensors", {})
+        dht_s = sensors.get("dht11", {})
+        soil_s = sensors.get("soil_moisture", {})
+        mq2_s = sensors.get("mq2", {})
+        thermo_s = sensors.get("thermocouple", {})
+        relay_s = status.get("actuators", {}).get("relay", {})
+
+        payload = {
+            "device_id": DEVICE_ID,
+            "device_name": DEVICE_NAME,
+            "temperature": dht_s.get("temperature"),
+            "humidity": dht_s.get("humidity"),
+            "soil_moisture_raw": soil_s.get("raw_adc"),
+            "mq2_raw": mq2_s.get("raw_adc"),
+            "thermocouple": thermo_s.get("temperature"),
+            "relay_active": relay_s.get("state") == 1,
+            "pump_active": relay_s.get("state") == 1,
+            "wifi_connected": status.get("wifi_connected", True),
+            "ip_address": status.get("ip_address"),
+            "device_status": status.get("device_status", "online")
+        }
+
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": "Bearer " + SUPABASE_KEY,
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal"
+        }
+        res = urequests.post(SUPABASE_URL + "/rest/v1/sensor_readings", json=payload, headers=headers)
+        res.close()
+    except Exception:
+        pass
+
+
 # ==============================================================================
 # 11. SERVER UTAMA (NON-BLOCKING)
 # ==============================================================================
@@ -744,7 +801,10 @@ def main():
             # A. Periksa dan jaga koneksi Wi-Fi secara berkala
             check_wifi_connection()
 
-            # B. Tangani koneksi client yang masuk (Non-blocking)
+            # B. Sinkronisasi data ke Supabase Cloud (PostgreSQL)
+            sync_to_supabase(get_device_status())
+
+            # C. Tangani koneksi client yang masuk (Non-blocking)
             try:
                 client_sock, client_addr = server_socket.accept()
                 client_sock.settimeout(2.0)  # Timeout komunikasi client

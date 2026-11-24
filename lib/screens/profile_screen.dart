@@ -134,6 +134,13 @@ class ProfileScreen extends StatelessWidget {
                             spacing: 8,
                             children: [
                               ChoiceChip(
+                                label: const Text('Supabase (Postgres)'),
+                                selected: settings.isSupabaseMode,
+                                onSelected: (val) {
+                                  if (val) settings.setConnectionMode('supabase');
+                                },
+                              ),
+                              ChoiceChip(
                                 label: const Text('ESP32 Langsung'),
                                 selected: settings.isEsp32Mode,
                                 onSelected: (val) {
@@ -379,21 +386,25 @@ class _DeviceConnectionSectionState extends State<_DeviceConnectionSection> {
           const SizedBox(height: 6),
           TextField(
             controller: _ipController,
-            keyboardType: TextInputType.url,
-            style: AppText.body,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            style: AppText.title.copyWith(
+              fontSize: 16,
+              color: AppColors.ink,
+              fontWeight: FontWeight.w600,
+            ),
             decoration: InputDecoration(
               hintText: 'Contoh: 192.168.1.100',
-              prefixIcon: const Icon(Icons.language, color: AppColors.inkSoft),
+              prefixIcon: const Icon(Icons.router_rounded, color: AppColors.forest),
               filled: true,
-              fillColor: Colors.white.withValues(alpha: 0.6),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              fillColor: Colors.white,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide(color: AppColors.forest.withValues(alpha: 0.2)),
               ),
               enabledBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: AppColors.forest.withValues(alpha: 0.2)),
+                borderSide: BorderSide(color: AppColors.forest.withValues(alpha: 0.25)),
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),

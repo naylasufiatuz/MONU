@@ -21,7 +21,7 @@ class SettingsProvider extends ChangeNotifier {
   String _databaseUrl = IotConfig.firebaseDatabaseUrl;
   String _deviceId = IotConfig.deviceId;
   String _esp32Ip = IotConfig.defaultEsp32Ip;
-  String _connectionMode = 'esp32'; // 'esp32', 'mock', 'firebase'
+  String _connectionMode = 'supabase'; // 'supabase', 'esp32', 'mock', 'firebase'
   final Map<String, AlertLimit> _custom = <String, AlertLimit>{};
 
   bool get loaded => _loaded;
@@ -31,6 +31,7 @@ class SettingsProvider extends ChangeNotifier {
   String get esp32Ip => _esp32Ip;
   String get connectionMode => _connectionMode;
   bool get isEsp32Mode => _connectionMode == 'esp32';
+  bool get isSupabaseMode => _connectionMode == 'supabase';
 
   Future<void> load() async {
     final SharedPreferences prefs = await SharedPreferences.getInstance();

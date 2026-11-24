@@ -11,6 +11,7 @@ import 'package:monu/repositories/esp32_sensor_repository.dart';
 import 'package:monu/repositories/firebase_sensor_repository.dart';
 import 'package:monu/repositories/mock_sensor_repository.dart';
 import 'package:monu/repositories/sensor_repository.dart';
+import 'package:monu/repositories/supabase_sensor_repository.dart';
 import 'package:monu/services/status_evaluator.dart';
 
 /// Otak app: menerima data dari repository, menghitung status,
@@ -57,9 +58,11 @@ class MonitorProvider extends ChangeNotifier {
   bool get supportsHistory => _repository?.supportsHistory ?? false;
   String get modeLabel =>
       _repository?.modeLabel ??
-      (_settings.isEsp32Mode
-          ? 'ESP32 (${_settings.esp32Ip})'
-          : (_settings.useMockData ? 'Mode Demo' : 'Mode Asli'));
+      (_settings.isSupabaseMode
+          ? 'Supabase (Cloud Postgres)'
+          : (_settings.isEsp32Mode
+              ? 'ESP32 (${_settings.esp32Ip})'
+              : (_settings.useMockData ? 'Mode Demo' : 'Mode Asli')));
   String get deviceId => _settings.deviceId;
   String get deviceName => _latest?.deviceName ?? 'MONU Node';
   DemoScenario get scenario => _scenario;
@@ -154,7 +157,11 @@ class MonitorProvider extends ChangeNotifier {
     _lastPumpActive = null;
 
     final SensorRepository repo;
-    if (_settings.isEsp32Mode) {
+    if (_settings.isSupabaseMode) {
+      repo = SupabaseSensorRepository(
+        deviceId: _settings.deviceId,
+      );
+    } else if (_settings.isEsp32Mode) {
       repo = Esp32SensorRepository(
         ipAddress: _settings.esp32Ip,
         deviceId: _settings.deviceId,

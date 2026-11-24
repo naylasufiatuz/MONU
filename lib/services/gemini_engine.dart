@@ -20,8 +20,8 @@ class GeminiEngine implements AssistantEngine {
   final String apiKey;
   final String model;
 
-  /// Alias yang selalu mengarah ke model Flash terbaru.
-  static const String defaultModel = 'gemini-flash-latest';
+  /// Alias model Gemini default (stabil dan cepat).
+  static const String defaultModel = 'gemini-1.5-flash';
 
   @override
   String get label => 'Gemini';
@@ -90,7 +90,7 @@ class GeminiEngine implements AssistantEngine {
     }
     final String modelName = model.trim().isEmpty ? defaultModel : model.trim();
     final Uri uri = Uri.parse(
-      'https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent',
+      'https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent?key=$key',
     );
 
     // Catatan: sengaja tidak mengirim "temperature" dan parameter sampling lain,

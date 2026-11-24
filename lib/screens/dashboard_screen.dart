@@ -13,6 +13,7 @@ import 'package:monu/providers/monitor_provider.dart';
 import 'package:monu/screens/profile_screen.dart';
 import 'package:monu/screens/sensor_detail_screen.dart';
 import 'package:monu/widgets/alert_tile.dart';
+import 'package:monu/widgets/esp32_ip_dialog.dart';
 import 'package:monu/widgets/fade_slide_in.dart';
 import 'package:monu/widgets/forest_background.dart';
 import 'package:monu/widgets/glass_card.dart';
@@ -23,6 +24,7 @@ import 'package:monu/widgets/sensor_card.dart';
 import 'package:monu/widgets/status_chip.dart';
 import 'package:provider/provider.dart';
 import 'package:monu/screens/assistant_screen.dart';
+import 'package:monu/providers/settings_provider.dart';
 
 /// Tab Ringkasan: status keseluruhan, kartu sensor, peringatan terbaru.
 class DashboardScreen extends StatelessWidget {
@@ -64,6 +66,13 @@ class DashboardScreen extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    FadeSlideIn(
+                      child: _Esp32QuickBar(
+                        settings: context.watch<SettingsProvider>(),
+                        monitor: monitor,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
                     FadeSlideIn(child: _StatusCard(monitor: monitor)),
                     const SizedBox(height: 16),
                     FadeSlideIn(
@@ -422,6 +431,118 @@ class _AssistantCard extends StatelessWidget {
             ),
           ),
           const Icon(Icons.chevron_right, color: AppColors.inkSoft),
+        ],
+      ),
+    );
+  }
+}
+
+/// Bar tombol cepat di Ringkasan untuk melihat dan mengganti IP ESP32 secara instan.
+class _Esp32QuickBar extends StatelessWidget {
+  const _Esp32QuickBar({required this.settings, required this.monitor});
+
+  final SettingsProvider settings;
+  final MonitorProvider monitor;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isEsp32 = settings.isEsp32Mode;
+    final bool isConnected = isEsp32 && !monitor.isOffline;
+    final String currentIp =
+        settings.esp32Ip.isEmpty ? '192.168.1.100' : settings.esp32Ip;
+
+    return GlassCard(
+      onTap: () => showEsp32IpDialog(context),
+      radius: 18,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      tint: Colors.white.withValues(alpha: 0.88),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: (isConnected ? AppColors.safe : AppColors.forest)
+                  .withValues(alpha: 0.14),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              Icons.wifi_tethering_rounded,
+              size: 22,
+              color: isConnected ? AppColors.safe : AppColors.forest,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      'IP ESP32: ',
+                      style: AppText.caption.copyWith(
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.ink,
+                      ),
+                    ),
+                    Text(
+                      currentIp,
+                      style: AppText.label.copyWith(
+                        fontSize: 13.5,
+                        color: AppColors.forestDeep,
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  isEsp32
+                      ? (isConnected
+                          ? '🟢 Terhubung langsung ke alat'
+                          : '🟡 Mencari alat di $currentIp (ketuk untuk ubah)')
+                      : 'Mode ${settings.connectionMode.toUpperCase()} • Ketuk untuk ubah IP',
+                  style: AppText.caption.copyWith(
+                    fontSize: 11.5,
+                    color: AppColors.inkSoft,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            decoration: BoxDecoration(
+              color: AppColors.forestDeep,
+              borderRadius: BorderRadius.circular(999),
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.forestDeep.withValues(alpha: 0.25),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.edit_rounded, size: 12, color: Colors.white),
+                const SizedBox(width: 5),
+                Text(
+                  'Ubah IP',
+                  style: AppText.caption.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 11.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );

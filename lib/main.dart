@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:monu/config/supabase_config.dart';
 import 'package:monu/core/app_info.dart';
 import 'package:monu/core/app_theme.dart';
 import 'package:monu/core/routes.dart';
@@ -12,9 +13,20 @@ import 'package:monu/screens/onboarding_screen.dart';
 import 'package:monu/widgets/phone_frame.dart';
 import 'package:provider/provider.dart';
 import 'package:monu/providers/assistant_provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+/// Helper client global untuk mengakses database Supabase (PostgreSQL)
+final SupabaseClient supabase = Supabase.instance.client;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Inisialisasi database Supabase (PostgreSQL)
+  await Supabase.initialize(
+    url: SupabaseConfig.url,
+    // ignore: deprecated_member_use
+    anonKey: SupabaseConfig.anonKey,
+  );
 
   final SettingsProvider settings = SettingsProvider();
   final AuthProvider auth = AuthProvider();
