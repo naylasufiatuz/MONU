@@ -22,11 +22,17 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // Inisialisasi database Supabase (PostgreSQL)
-  await Supabase.initialize(
-    url: SupabaseConfig.url,
-    // ignore: deprecated_member_use
-    anonKey: SupabaseConfig.anonKey,
-  );
+  // Jika key tidak valid, app tetap berjalan dengan mode ESP32 / Demo
+  try {
+    await Supabase.initialize(
+      url: SupabaseConfig.url,
+      anonKey: SupabaseConfig.anonKey,
+    );
+  } catch (e) {
+    // Supabase gagal init → app lanjut, mode Supabase akan error dan
+    // user bisa beralih ke ESP32 langsung dari Profil > Koneksi Perangkat
+    debugPrint('[MONU] Supabase init gagal: $e');
+  }
 
   final SettingsProvider settings = SettingsProvider();
   final AuthProvider auth = AuthProvider();

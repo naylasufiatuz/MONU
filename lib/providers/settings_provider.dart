@@ -21,6 +21,8 @@ class SettingsProvider extends ChangeNotifier {
   String _databaseUrl = IotConfig.firebaseDatabaseUrl;
   String _deviceId = IotConfig.deviceId;
   String _esp32Ip = IotConfig.defaultEsp32Ip;
+  // Default: supabase — saat pertama install langsung pakai Supabase Cloud
+  // User bisa ubah ke 'esp32' atau 'mock' dari halaman Profil
   String _connectionMode = 'supabase'; // 'supabase', 'esp32', 'mock', 'firebase'
   final Map<String, AlertLimit> _custom = <String, AlertLimit>{};
 
@@ -38,7 +40,8 @@ class SettingsProvider extends ChangeNotifier {
     _prefs = prefs;
 
     _esp32Ip = prefs.getString(_kEsp32Ip) ?? IotConfig.defaultEsp32Ip;
-    _connectionMode = prefs.getString(_kConnMode) ?? 'esp32';
+    // Default pertama kali install → supabase (agar langsung bisa pantau cloud)
+    _connectionMode = prefs.getString(_kConnMode) ?? 'supabase';
     _useMockData = prefs.getBool(_kMock) ?? (_connectionMode == 'mock');
     _databaseUrl = prefs.getString(_kUrl) ?? IotConfig.firebaseDatabaseUrl;
     _deviceId = prefs.getString(_kDevice) ?? IotConfig.deviceId;

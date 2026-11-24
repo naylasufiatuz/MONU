@@ -12,7 +12,7 @@ class IotConfig {
   /// false = Mode Asli (membaca data dari Firebase Realtime Database).
   /// Pilihan ini juga bisa diganti dari dalam app
   /// (Profil > Pengaturan Koneksi IoT) tanpa mengubah file ini.
-  static const bool useMockData = true;
+  static const bool useMockData = false;
 
   /// ISI DI SINI: alamat Realtime Database dari Firebase.
   /// Contoh: https://nama-proyek-default-rtdb.firebaseio.com
@@ -22,7 +22,8 @@ class IotConfig {
   static const String deviceId = 'monu-node-1';
 
   /// ISI DI SINI: IP Address default ESP32 untuk koneksi langsung.
-  static const String defaultEsp32Ip = '192.168.1.100';
+  /// Kosongkan ('') agar user wajib isi sendiri saat pertama buka app.
+  static const String defaultEsp32Ip = '';
 
   /// Interval polling untuk pengambilan data langsung dari ESP32 (2 detik).
   static const Duration esp32PollInterval = Duration(seconds: 2);

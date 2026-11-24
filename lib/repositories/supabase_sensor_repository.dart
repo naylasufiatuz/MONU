@@ -48,10 +48,19 @@ class SupabaseSensorRepository implements SensorRepository {
           }
         },
         onError: (err) {
+          if (!_controller.isClosed) {
+            _controller.addError(err);
+          }
           _startPollingFallback();
         },
       );
-    } catch (_) {
+    } catch (e) {
+      if (!_controller.isClosed) {
+        _controller.addError(RepositoryException(
+          'Supabase belum dikonfigurasi atau tabel sensor_readings belum dibuat. '
+          'Jalankan SQL di supabase_schema.sql terlebih dahulu. Error: $e',
+        ));
+      }
       _startPollingFallback();
     }
   }
@@ -89,9 +98,18 @@ class SupabaseSensorRepository implements SensorRepository {
         final DeviceSnapshot snap =
             _mapToSnapshot(rows.first as Map<String, dynamic>);
         if (!_controller.isClosed) _controller.add(snap);
+      } else {
+        // Tabel ada tapi belum ada data dari device ini
+        if (!_controller.isClosed) _controller.add(null);
       }
     } catch (e) {
-      if (!_controller.isClosed) _controller.addError(e);
+      if (!_controller.isClosed) {
+        _controller.addError(RepositoryException(
+          'Gagal membaca data dari Supabase. '
+          'Pastikan tabel sensor_readings sudah dibuat dan Anon Key benar. '
+          'Error: $e',
+        ));
+      }
     } finally {
       _fetching = false;
     }
