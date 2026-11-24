@@ -188,6 +188,9 @@ class GeminiEngine implements AssistantEngine {
     if (code == 400 && (lower.contains('api key') || lower.contains('api_key'))) {
       return 'Kunci API tidak valid (kode 400).$detail Pastikan kunci disalin utuh, tanpa spasi.';
     }
+    if (lower.contains('free tier is not available') || lower.contains('upgrade to the paid tier')) {
+      return 'Kunci API ini berada di Google Cloud Project yang menonaktifkan kuota gratis (Free Tier). Solusi mudah: Buka aistudio.google.com/apikey, buat API key baru dan pilih opsi "Create API key in new project" menggunakan akun Google pribadi (@gmail.com) agar 100% gratis tanpa billing.';
+    }
     if (code == 401 || code == 403) {
       return 'Kunci ditolak (kode $code).$detail Pastikan kunci dibuat lewat "Create API key" di aistudio.google.com/apikey, disalin utuh, dan akun Google-mu boleh memakai Gemini API.';
     }

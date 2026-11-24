@@ -728,7 +728,10 @@ ATURAN MENJAWAB:
 
       if (!response.ok) {
         let msg = data?.error?.message || `Kode status HTTP ${response.status}`;
-        if (response.status === 400 && msg.toLowerCase().includes("api key")) {
+        const lower = msg.toLowerCase();
+        if (lower.includes("free tier is not available") || lower.includes("upgrade to the paid tier")) {
+          msg = "Kunci API ini berada di Google Cloud Project yang menonaktifkan Free Tier (Error 403). Solusi: Buka aistudio.google.com/apikey, buat API key baru dan pilih 'Create API key in new project' dengan akun Google pribadi biasa (@gmail.com) agar 100% gratis tanpa bayar.";
+        } else if (response.status === 400 && lower.includes("api key")) {
           msg = "API Key Gemini tidak valid atau belum aktif. Periksa kembali kunci Anda.";
         } else if (response.status === 404) {
           msg = `Model ${model} tidak tersedia untuk API key ini. Coba ganti ke gemini-1.5-flash.`;

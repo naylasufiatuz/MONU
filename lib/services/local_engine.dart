@@ -46,8 +46,19 @@ class LocalEngine implements AssistantEngine {
     if (RegExp(r'\b(api|kebakaran|terbakar|membakar)\b').hasMatch(q)) {
       return _fire(d);
     }
-    if (_has(q, [
-      'offline', 'online', 'putus', 'koneksi', 'wifi', 'wi-fi',
+    if (_has(q, ['monu', 'sistem ini', 'aplikasi ini', 'proyek ini', 'latar belakang', 'tujuan'])) {
+      return _monuSystem(d);
+    }
+    if (_has(q, ['relay', 'pompa', 'aktuator', 'nyiram', 'menyiram'])) {
+      return _relayPump(d);
+    }
+    if (_has(q, ['thermo', 'thermocouple', 'max6675', 'k-type'])) {
+      return _thermocouple(d);
+    }
+    if (_has(q, ['esp32', 'alat', 'hardware', 'mikrokontroler'])) {
+      return _esp32(d);
+    }
+    if (_has(q, ['offline', 'online', 'putus', 'koneksi', 'wifi', 'wi-fi',
       'terhubung', 'tersambung',
     ])) {
       return _connection(d);
@@ -361,12 +372,45 @@ class LocalEngine implements AssistantEngine {
     return b.toString();
   }
 
+  String _monuSystem(AssistantData d) {
+    return '**MONU (Monitoring Hutan)** adalah sistem pemantau miniatur hutan berbasis Internet of Things (IoT) yang ditenagai mikrokontroler **ESP32**.\n\n'
+        'Fungsi utama MONU:\n'
+        '- **DHT11**: Memantau suhu udara dan kelembapan di sekitar miniatur hutan.\n'
+        '- **Soil Moisture**: Memeriksa kebasahan tanah untuk mencegah kekeringan.\n'
+        '- **MQ-2**: Mendeteksi asap dan gas mudah terbakar sebagai peringatan dini.\n'
+        '- **MAX6675 (Thermocouple)**: Mengukur suhu ekstrem tahan panas.\n'
+        '- **Relay**: Mengontrol pompa air untuk penyiraman otomatis.\n'
+        '- **Supabase Cloud**: Mengirim telemetri secara realtime ke database PostgreSQL.';
+  }
+
+  String _relayPump(AssistantData d) {
+    return '**Pompa Air & Relay (GPIO 19)**:\n'
+        '- Relay berfungsi sebagai saklar elektronik untuk menghidupkan/mematikan pompa penyiram air miniatur hutan.\n'
+        '- Pompa akan aktif jika tanah terdeteksi kering atau ada instruksi penyiraman manual dari aplikasi/sistem.\n'
+        '- Status pompa dapat dipantau di dashboard Web atau aplikasi.';
+  }
+
+  String _thermocouple(AssistantData d) {
+    return '**Sensor Thermocouple MAX6675 (K-Type)**:\n'
+        '- Sensor ini menggunakan probe logam tahan api yang dapat mengukur suhu tinggi ekstrem (hingga ratusan derajat Celsius).\n'
+        '- Digunakan untuk memantau titik panas atau bara api pada simulasi kebakaran miniatur hutan.';
+  }
+
+  String _esp32(AssistantData d) {
+    return '**Mikrokontroler ESP32 (monu-node-1)**:\n'
+        '- Otak pengendali dari sistem MONU. ESP32 membaca data dari seluruh sensor lalu mengirimkannya ke cloud Supabase atau via HTTP REST port 80.\n'
+        '- Menggunakan sistem koneksi otomatis DHCP (tanpa perlu IP statis).\n'
+        '- Anda dapat mengganti atau memasukkan IP ESP32 lewat tombol "Ubah IP" di Ringkasan.';
+  }
+
   String _fallback() {
-    return 'Aku belum menangkap maksudnya. Coba tanya misalnya:\n'
-        '- "Ringkas kondisi sekarang"\n'
-        '- "Bagaimana suhu sekarang?"\n'
-        '- "Kenapa status waspada?"\n'
-        '- "Apa arti nilai MQ-2?"\n\n'
-        'Untuk pertanyaan bebas, pasang kunci Gemini di pengaturan AI.';
+    return 'Pertanyaanmu menarik! Sebagai Asisten MONU, aku menguasai topik seputar pemantauan hutan miniatur dan sensor IoT.\n\n'
+        'Kamu bisa menanyakan hal-hal seperti:\n'
+        '- **"Ringkas kondisi hutan sekarang"**\n'
+        '- **"Berapa suhu dan kelembapan ideal?"**\n'
+        '- **"Apa fungsi sensor MQ-2 dan tanah?"**\n'
+        '- **"Ceritakan tentang sistem MONU dan ESP32"**\n'
+        '- **"Kapan pompa air harus dinyalakan?"**\n\n'
+        '*Catatan:* Jika ingin mengobrol bebas di luar topik MONU, pastikan kunci Gemini aktif dan valid di Pengaturan AI.';
   }
 }

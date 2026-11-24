@@ -101,6 +101,16 @@ def call_gemini(history, system_instruction=SYSTEM_PROMPT, model=GEMINI_MODEL, a
             msg = err_json.get("error", {}).get("message", err_msg)
         except Exception:
             msg = err_msg
+        if "free tier is not available" in msg.lower() or "upgrade to the paid tier" in msg.lower():
+            return (
+                "\n⚠️ [Google Gemini Error 403: Free Tier Tidak Aktif]\n"
+                "Kunci API ini berada di dalam Google Cloud Project yang menonaktifkan kuota gratis.\n"
+                "Solusi Mudah:\n"
+                "1. Buka browser: https://aistudio.google.com/apikey\n"
+                "2. Klik 'Create API key'\n"
+                "3. PENTING: Pilih 'Create API key in new project' (menggunakan akun Gmail pribadi biasa)\n"
+                "4. Salin kunci baru tersebut dan gantikan di file .gemini_key\n"
+            )
         return f"[Error HTTP {e.code}: {msg}]"
     except urllib.error.URLError as e:
         return f"[Error Koneksi: Pastikan komputer terhubung ke internet. ({e.reason})]"
