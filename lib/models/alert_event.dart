@@ -12,6 +12,7 @@ enum AlertKind {
   wateringStarted,
   wateringFinished,
   drySoil,
+  fireEmergency,
 }
 
 /// Satu kejadian peringatan. Punya waktu mulai dan (kalau sudah pulih) waktu selesai.
@@ -65,6 +66,8 @@ class AlertEvent {
         return 'Penyiraman selesai';
       case AlertKind.drySoil:
         return 'Tanah terdeteksi kering';
+      case AlertKind.fireEmergency:
+        return 'DARURAT: Api Terdeteksi (Thermocouple)!';
       case AlertKind.sensorFailure:
         return '${spec?.name ?? "Sensor"} tidak terbaca';
       case AlertKind.threshold:
@@ -98,6 +101,8 @@ class AlertEvent {
         return 'Relay mati. Penyiraman selesai, kelembapan aman telah tercapai.';
       case AlertKind.drySoil:
         return 'Kelembapan tanah rendah melewati batas normal. Sistem menyiram otomatis.';
+      case AlertKind.fireEmergency:
+        return 'Thermocouple mendeteksi panas api tinggi (>= 50°C). Sistem menyalakan pompa air untuk pemadaman dan membunyikan sirine darurat!';
       case AlertKind.sensorFailure:
         return 'Pembacaan gagal atau modul sensor belum terpasang. Nilai ditandai belum tersedia.';
       case AlertKind.threshold:

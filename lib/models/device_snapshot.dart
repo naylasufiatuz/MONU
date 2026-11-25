@@ -12,6 +12,7 @@ class DeviceSnapshot {
     this.soilMoisturePercent,
     this.relayActive = false,
     this.pumpActive = false,
+    this.fireDetected = false,
     this.isWifiConnected = true,
     this.esp32Ip,
     this.deviceStatus = 'online',
@@ -34,6 +35,9 @@ class DeviceSnapshot {
 
   /// Status pompa air (mengikuti aktivasi relay).
   final bool pumpActive;
+
+  /// Indikasi deteksi api / panas darurat pada thermocouple.
+  final bool fireDetected;
 
   /// Status Wi-Fi pada ESP32.
   final bool isWifiConnected;
@@ -149,15 +153,15 @@ class DeviceSnapshot {
       'thermocouple': thermo,
     };
 
-    // Relay & Pompa Air
+    // Relay & Pompa Air (Mendukung format PRD pump_status, pump objek, dan relay)
     final dynamic actuators = map['actuators'];
-    final dynamic relayData = (actuators is Map) ? actuators['relay'] : map['relay'];
-    bool isRelayOn = false;
-    if (relayData is Map) {
-      final dynamic state = relayData['state'];
-      isRelayOn = state == 1 || state == true || relayData['state_label'] == 'ON';
-    } else if (relayData != null) {
-      isRelayOn = relayData == 1 || relayData == true || relayData == 'ON';
+    final dynamic pumpObj = (actuators is Map) ? actuators['relay'] : (map['pump'] ?? map['relay']);
+    bool isRelayOn = map['pump_status'] == true || map['pump_status'] == 1 || map['pump_status'] == 'ON';
+    if (!isRelayOn && pumpObj is Map) {
+      final dynamic state = pumpObj['state'] ?? pumpObj['active'];
+      isRelayOn = state == 1 || state == true || pumpObj['state_label'] == 'ON';
+    } else if (!isRelayOn && pumpObj != null) {
+      isRelayOn = pumpObj == 1 || pumpObj == true || pumpObj == 'ON';
     }
 
     // Status Jaringan
@@ -177,6 +181,10 @@ class DeviceSnapshot {
       soilPercent = double.parse(soilPercent.toStringAsFixed(0));
     }
 
+    final bool isFire = map['fire_detected'] == true ||
+        (thermoData is Map && (thermoData['fire_detected'] == true || thermoData['status'] == 'FIRE_ALERT')) ||
+        (thermo != null && thermo >= 50.0);
+
     return DeviceSnapshot(
       deviceId: deviceId,
       deviceName: deviceName,
@@ -185,6 +193,7 @@ class DeviceSnapshot {
       soilMoisturePercent: soilPercent,
       relayActive: isRelayOn,
       pumpActive: isRelayOn,
+      fireDetected: isFire,
       isWifiConnected: wifiOk,
       esp32Ip: ip,
       deviceStatus: (map['device_status'] ?? map['status'] ?? (wifiOk ? 'online' : 'offline')).toString(),

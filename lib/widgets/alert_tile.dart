@@ -38,6 +38,7 @@ class AlertTile extends StatelessWidget {
       AlertKind.wateringStarted => Icons.water_drop,
       AlertKind.wateringFinished => Icons.check_circle_outline,
       AlertKind.drySoil => Icons.grass,
+      AlertKind.fireEmergency => Icons.local_fire_department,
       _ => event.level.icon,
     };
 

@@ -310,6 +310,8 @@ class LocalEngine implements AssistantEngine {
         return 'penyiraman telah selesai dan pompa kembali mati.';
       case AlertKind.drySoil:
         return 'cek posisi probe kelembapan tanah dan ketersediaan air penyiraman.';
+      case AlertKind.fireEmergency:
+        return 'darurat api terdeteksi! Pompa air diaktifkan otomatis untuk pemadaman dan sirine berbunyi kencang. Segera periksa sumber api!';
       case AlertKind.sensorFailure:
         return 'cek kabel, pin, dan catu daya sensor itu.';
       case AlertKind.threshold:

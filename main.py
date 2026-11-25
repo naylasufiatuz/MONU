@@ -19,8 +19,8 @@ import gc
 # 1. PENGATURAN WI-FI & IDENTITAS PERANGKAT
 # ==============================================================================
 # Silakan sesuaikan SSID dan Password Wi-Fi / Hotspot Anda:
-WIFI_SSID     = "NAMA_WIFI_ANDA"
-WIFI_PASSWORD = "PASSWORD_WIFI_ANDA"
+WIFI_SSID     = "piraeyy"
+WIFI_PASSWORD = "aeliluyy"
 
 DEVICE_ID     = "monu-node-1"
 DEVICE_NAME   = "ESP32 MONU Node"
@@ -53,11 +53,14 @@ PUMP_MAX_RUNTIME_SEC = 20   # Pengaman: Maksimal pompa menyala berturut-turut (2
 PUMP_COOLDOWN_SEC    = 15   # Jeda istirahat wajib setelah pompa menyala (15 detik)
 
 # Konfigurasi Buzzer 3 Pin:
-# - Active Buzzer: Cukup sinyal Digital HIGH/LOW (BUZZER_USE_PWM = False)
-# - Passive Buzzer: Membutuhkan frekuensi nada PWM (BUZZER_USE_PWM = True)
+# - Active Buzzer: Menghasilkan bunyi dengan sinyal Digital HIGH/LOW atau pulsa cepat
+# - Passive Buzzer: Menghasilkan nada nyaring dengan sinyal frekuensi PWM
+# PENTING: BUZZER_USE_PWM diaktifkan (True) dengan duty 50% dan frekuensi resonansi 2730 Hz
+# agar menghasilkan volume bunyi MAKSIMAL dan KENCANG untuk buzzer pasif maupun aktif.
 BUZZER_ACTIVE_HIGH   = True
-BUZZER_USE_PWM       = False  # Ubah ke True jika modul buzzer Anda tipe pasif
-BUZZER_PWM_FREQ      = 2000   # Frekuensi nada alarm buzzer pasif (2000 Hz)
+BUZZER_USE_PWM       = True   # True = PWM duty 50% optimal (suara paling kencang)
+BUZZER_PWM_FREQ      = 2730   # Frekuensi resonansi puncak diafragma piezo (2730 Hz = dB tertinggi)
+BUZZER_SIREN_MODE    = True   # True = Efek sirine dua nada menusuk (2600 Hz & 3300 Hz) agar suara sangat keras
 
 # ==============================================================================
 # 4. AMBANG BATAS & KALIBRASI SENSOR
@@ -74,12 +77,19 @@ DHT_TEMP_SAFE_THRESHOLD  = 32.0   # Suhu udara kembali normal (°C) -> OFF
 DHT_READ_INTERVAL_MS     = 2500   # Jeda minimum pembacaan DHT11 (2.5 detik)
 
 # C. MQ-2 (Deteksi Gas / Asap)
-MQ2_GAS_THRESHOLD        = 1800   # Ambang batas deteksi gas (ADC mentah) -> Buzzer ON
+# PRD v2.2 FR-06: Gas >= 2500 ADC -> Buzzer ON, Pompa TIDAK aktif karena gas saja!
+MQ2_GAS_THRESHOLD        = 2500   # Ambang batas deteksi gas (ADC mentah) -> Buzzer ON saja
 MQ2_WARMUP_SEC           = 20     # Waktu pemanasan awal sensor MQ-2 saat startup
 
-# D. Thermocouple K-Type + MAX6675
-THERMO_TEMP_HIGH_THRESHOLD = 60.0 # Suhu thermocouple tinggi (°C) -> Pompa ON & Buzzer ON
-THERMO_TEMP_SAFE_THRESHOLD = 45.0 # Suhu thermocouple kembali aman (°C) -> OFF
+# D. Thermocouple K-Type + MAX6675 (PRD v2.2 FR-05)
+# Probe NORMAL   : suhu naik (>= 50°C)      -> Pompa ON + Buzzer ON
+# Probe TERBALIK : suhu turun (<= 28°C)      -> juga Pompa ON + Buzzer ON
+#   (Probe terbalik membaca RENDAH saat sebenarnya PANAS, misal saat dibakar korek
+#    bacaan turun dari 27°C -> 0°C, sehingga <= THERMO_FIRE_REVERSED = panas nyata)
+THERMO_FIRE_THRESHOLD      = 50.0 # Probe normal: suhu tinggi (°C) -> Pompa ON & Buzzer ON
+THERMO_FIRE_REVERSED       = 10.0 # Probe terbalik: jika bacaan <= 10°C -> Pompa ON & Buzzer ON
+THERMO_TEMP_HIGH_THRESHOLD = 50.0 # Alias kompatibilitas threshold suhu tinggi
+THERMO_TEMP_SAFE_THRESHOLD = 40.0 # Suhu thermocouple kembali aman (°C) -> OFF
 
 # Waktu Siklus Pemantauan
 SENSOR_READ_INTERVAL_MS  = 1000   # Baca sensor & evaluasi logika setiap 1 detik
@@ -167,8 +177,11 @@ class BuzzerController:
         self.active_high = active_high
         self.use_pwm = use_pwm
         self.is_active = False
+        self.is_emergency = False
         self.active_reasons = []
         self.pwm = None
+        self.last_siren_ticks = 0
+        self.siren_state = False
 
         self.on_val = 1 if self.active_high else 0
         self.off_val = 0 if self.active_high else 1
@@ -176,47 +189,98 @@ class BuzzerController:
         try:
             self.pin = machine.Pin(self.pin_num, machine.Pin.OUT, value=self.off_val)
             self.pin.value(self.off_val)
-            buzzer_type_str = "PWM" if use_pwm else "Digital"
+            buzzer_type_str = "PWM (Suara Kencang)" if use_pwm else "Digital DC"
             print("[Actuator] Buzzer GPIO " + str(pin_num) + " siap (" + buzzer_type_str + ", Status: OFF)")
         except Exception as e:
             print("[Actuator] Gagal inisialisasi buzzer: " + str(e))
             self.pin = None
 
-    def turn_on(self, reason="Alarm"):
+    def _start_pwm(self, freq=BUZZER_PWM_FREQ):
+        if not self.pin:
+            return
+        try:
+            if self.pwm is None:
+                self.pwm = machine.PWM(machine.Pin(self.pin_num))
+            self.pwm.freq(freq)
+            try:
+                # 50% square-wave duty cycle (32768 dari 65535) untuk amplitudo akustik maksimal
+                self.pwm.duty_u16(32768)
+            except (AttributeError, ValueError):
+                # Fallback untuk MicroPython lama (rentang 0-1023)
+                self.pwm.duty(512)
+        except Exception as e:
+            print("[Buzzer] Error PWM: " + str(e))
+            try:
+                self.pin.value(self.on_val)
+            except:
+                pass
+
+    def turn_on(self, reason="Alarm", emergency=False):
         if not self.pin:
             return False
+        self.is_emergency = emergency
         if not self.is_active:
+            self.is_active = True
+            self.last_siren_ticks = time.ticks_ms()
+            self.siren_state = False
             if self.use_pwm:
-                try:
-                    self.pwm = machine.PWM(machine.Pin(self.pin_num), freq=BUZZER_PWM_FREQ, duty=512)
-                except Exception as e:
-                    print("[Buzzer] Error PWM: " + str(e))
+                freq = 3300 if emergency else BUZZER_PWM_FREQ
+                self._start_pwm(freq)
             else:
                 self.pin.value(self.on_val)
-            self.is_active = True
-            print("[Buzzer] >>> BUZZER MENYALA (ON) | Alasan: " + str(reason))
+            prefix = "[EMERGENCY SIREN]" if emergency else "[Buzzer]"
+            print(prefix + " >>> BUZZER MENYALA KENCANG (ON) | Alasan: " + str(reason))
+        else:
+            if emergency and not self.is_emergency:
+                self.is_emergency = True
         return True
+
+    def update(self):
+        """
+        Modulasi frekuensi sirine agar suara piezo jauh lebih menusuk, nyaring,
+        dan terdengar sangat kencang menembus kebisingan ruangan.
+        """
+        if not self.is_active or not self.use_pwm or not BUZZER_SIREN_MODE:
+            return
+
+        now = time.ticks_ms()
+        # Sirine api darurat modulasi cepat (120ms), peringatan standar (220ms)
+        interval = 120 if self.is_emergency else 220
+        if time.ticks_diff(now, self.last_siren_ticks) >= interval:
+            self.last_siren_ticks = now
+            self.siren_state = not self.siren_state
+            # Berganti antara 2600 Hz dan 3300 Hz (resonansi puncak diafragma piezo)
+            target_freq = 3300 if self.siren_state else 2600
+            try:
+                if self.pwm:
+                    self.pwm.freq(target_freq)
+            except:
+                pass
 
     def turn_off(self, reason="Normal"):
         if not self.pin:
             return False
         if self.is_active:
-            if self.use_pwm and self.pwm:
+            if self.pwm:
                 try:
                     self.pwm.deinit()
                 except:
                     pass
                 self.pwm = None
-            self.pin = machine.Pin(self.pin_num, machine.Pin.OUT, value=self.off_val)
-            self.pin.value(self.off_val)
+            try:
+                self.pin = machine.Pin(self.pin_num, machine.Pin.OUT, value=self.off_val)
+                self.pin.value(self.off_val)
+            except:
+                pass
             self.is_active = False
+            self.is_emergency = False
             self.active_reasons = []
             print("[Buzzer] <<< BUZZER MATI (OFF) | Alasan: " + str(reason))
         return True
 
     def beep(self, duration_ms=100):
-        """Bunyi 'beep' singkat untuk feedback startup."""
-        self.turn_on("Beep Feedback")
+        """Bunyi 'beep' singkat untuk feedback startup dengan volume penuh."""
+        self.turn_on("Beep Feedback", emergency=False)
         time.sleep_ms(duration_ms)
         self.turn_off("Beep End")
 
@@ -225,6 +289,7 @@ class BuzzerController:
             "name": "Buzzer Peringatan",
             "gpio": self.pin_num,
             "active": self.is_active,
+            "emergency": self.is_emergency,
             "state_label": "ON" if self.is_active else "OFF",
             "active_reasons": self.active_reasons
         }
@@ -452,13 +517,20 @@ class SensorManager:
                     print("[WARNING] Suhu thermocouple anjlok drastis! Periksa polaritas kabel probe T+ dan T-.")
 
             self.last_thermo_val = temp_c
-            is_high = temp_c >= THERMO_TEMP_HIGH_THRESHOLD
+
+            # Deteksi api:
+            # - Probe NORMAL   : suhu tinggi >= THERMO_FIRE_THRESHOLD (50°C)
+            # - Probe TERBALIK : suhu rendah <= THERMO_FIRE_REVERSED  (28°C)
+            #   (saat dibakar, probe terbalik membaca mendekati 0°C)
+            is_fire = (temp_c >= THERMO_FIRE_THRESHOLD) or (temp_c <= THERMO_FIRE_REVERSED)
+            is_high = is_fire
 
             hex_str = "0x" + ("0000" + hex(data)[2:])[-4:].upper()
 
             return {
                 "temperature": round(temp_c, 2),
-                "status": "HIGH" if is_high else "NORMAL",
+                "status": "FIRE_ALERT" if is_fire else ("HIGH" if is_high else "NORMAL"),
+                "fire_detected": is_fire,
                 "raw_hex": hex_str,
                 "unit": "°C",
                 "error": None
@@ -488,12 +560,52 @@ class WiFiManager:
     def __init__(self, ssid=WIFI_SSID, password=WIFI_PASSWORD):
         self.ssid = ssid
         self.password = password
-        self.wlan = network.WLAN(network.STA_IF)
         self.last_check = 0
+        self.wlan = None
+        self._init_wlan()
+
+    def _init_wlan(self):
+        """Inisialisasi interface STA dengan manajemen RAM ketat agar terhindar dari WiFi Out of Memory."""
+        gc.collect()
+        # Matikan Access Point (AP_IF) jika aktif agar memori internal Wi-Fi lega
+        try:
+            ap = network.WLAN(network.AP_IF)
+            if ap.active():
+                ap.active(False)
+        except:
+            pass
+        gc.collect()
+
+        for attempt in range(2):
+            try:
+                self.wlan = network.WLAN(network.STA_IF)
+                return True
+            except OSError as e:
+                print("[Wi-Fi] Percobaan " + str(attempt + 1) + " gagal (" + str(e) + "), bersihkan RAM...")
+                gc.collect()
+                time.sleep_ms(250)
+            except Exception as e:
+                print("[Wi-Fi] Gagal inisialisasi WLAN: " + str(e))
+                break
+        self.wlan = None
+        return False
 
     def connect(self, timeout_s=WIFI_TIMEOUT_SEC):
-        if not self.wlan.active():
-            self.wlan.active(True)
+        if self.wlan is None:
+            if not self._init_wlan():
+                print("[Wi-Fi] WLAN tidak tersedia (memori penuh). Sistem tetap berjalan offline.")
+                return False
+
+        gc.collect()
+        try:
+            if not self.wlan.active():
+                self.wlan.active(True)
+        except OSError as e:
+            print("[Wi-Fi] Gagal mengaktifkan Wi-Fi (" + str(e) + "). Sistem tetap berjalan lokal.")
+            return False
+        except Exception as e:
+            print("[Wi-Fi] Error active(True): " + str(e))
+            return False
 
         try:
             self.wlan.config(dhcp_hostname="monu-esp32")
@@ -534,6 +646,8 @@ class WiFiManager:
         return True
 
     def check_and_reconnect(self):
+        if self.wlan is None:
+            return False
         now = time.ticks_ms()
         if time.ticks_diff(now, self.last_check) < WIFI_CHECK_INTERVAL_MS:
             return self.wlan.isconnected()
@@ -542,6 +656,7 @@ class WiFiManager:
         if not self.wlan.isconnected():
             print("[Wi-Fi] Koneksi terputus! Mencoba menyambung ulang di background...")
             try:
+                gc.collect()
                 if not self.wlan.active():
                     self.wlan.active(True)
                 self.wlan.connect(self.ssid, self.password)
@@ -551,15 +666,17 @@ class WiFiManager:
         return True
 
     def is_connected(self):
+        if self.wlan is None:
+            return False
         return self.wlan.isconnected()
 
     def get_ip(self):
-        if self.wlan.isconnected():
-            return self.wlan.ifconfig()[0]
-        return "0.0.0.0"
+        if self.wlan is None or not self.wlan.isconnected():
+            return "0.0.0.0"
+        return self.wlan.ifconfig()[0]
 
     def get_info(self):
-        conn = self.wlan.isconnected()
+        conn = False if self.wlan is None else self.wlan.isconnected()
         ip, sub, gw, dns = ("0.0.0.0", "0.0.0.0", "0.0.0.0", "0.0.0.0")
         mac_str = "00:00:00:00:00:00"
         rssi = None
@@ -629,10 +746,11 @@ class HttpServer:
 
         is_dry = soil.get("soil_dry", False)
         gas_det = mq2.get("gas_detected", False)
+        fire_det = tc.get("fire_detected", False)
         pump_on = self.pump_ctrl.is_active
         buzzer_on = self.buzzer_ctrl.is_active
 
-        sys_status = "alarm" if (gas_det or pump_on or buzzer_on) else "normal"
+        sys_status = "alarm" if (gas_det or fire_det or pump_on or buzzer_on) else "normal"
 
         return {
             "temperature": dht_s.get("temperature"),
@@ -642,6 +760,7 @@ class HttpServer:
             "soil_value": soil.get("raw"),
             "soil_moisture": soil.get("percentage"),
             "gas_detected": gas_det,
+            "fire_detected": fire_det,
             "soil_dry": is_dry,
             "pump_status": pump_on,
             "buzzer_status": buzzer_on,
@@ -720,7 +839,8 @@ class HttpServer:
         dht_hum_val = str(dht_s.get("humidity", "-"))
 
         tc_stat = str(tc.get("status", "NORMAL"))
-        tc_badge_cls = "bg-danger" if tc_stat in ("error", "HIGH") else "bg-on"
+        tc_fire = tc.get("fire_detected", False)
+        tc_badge_cls = "bg-danger" if (tc_stat in ("error", "HIGH", "FIRE_ALERT") or tc_fire) else "bg-on"
         tc_temp_val = str(tc.get("temperature", "-"))
         tc_hex_val = str(tc.get("raw_hex", "-"))
         tc_err = tc.get("error")
@@ -944,93 +1064,103 @@ class HttpServer:
 # ==============================================================================
 def evaluate_automation(sensor_data, pump_ctrl, buzzer_ctrl):
     """
-    Kombinasi Logika Otomatisasi (PRD Seksi 7):
+    Logika Otomatisasi PRD DiHutan v2.2 (FR-05, FR-06, FR-07):
     -------------------------------------------------------------------------
-    Kondisi                   | Pompa | Buzzer
+    Kondisi                        | Pompa | Buzzer
     -------------------------------------------------------------------------
-    Semua sensor normal       | OFF   | OFF
-    Tanah kering              | ON    | OFF
-    Gas terdeteksi            | OFF   | ON
-    Suhu udara tinggi         | ON    | ON
-    Suhu thermocouple tinggi  | ON    | ON
+    Semua sensor normal            | OFF   | OFF
+    Tanah kering (>= 2000 ADC)    | ON    | OFF  <- tanah kering TIDAK nyalakan buzzer
+    Gas tinggi (>= 2500 ADC)      | OFF   | ON   <- gas tinggi TIDAK nyalakan pompa
+    Thermocouple >= 50 C           | ON    | ON   <- suhu tinggi nyalakan KEDUANYA
+    Gas tinggi + Tanah kering      | ON    | ON
+    Thermocouple + Gas + Tanah     | ON    | ON
     -------------------------------------------------------------------------
-    Prioritas Logika:
-    - Pompa ON jika: tanah kering ATAU suhu udara tinggi ATAU thermocouple tinggi.
-    - Buzzer ON jika: gas terdeteksi ATAU suhu udara tinggi ATAU thermocouple tinggi.
+    Rumus Gabungan Output (FR-06 & FR-07 PRD v2.2):
+    - Buzzer : (tc_temp >= THERMO_FIRE_THRESHOLD) OR (gas_raw >= MQ2_GAS_THRESHOLD)
+    - Pompa  : (tc_temp >= THERMO_FIRE_THRESHOLD) OR (soil kering)
+
+    CATATAN: DHT11 hanya informasi suhu udara, TIDAK memicu aktuator.
+    Fail-Safe: Jika MAX6675 error/terputus, pemicu suhu dinonaktifkan secara aman.
     """
     soil   = sensor_data.get("soil_moisture", {})
-    dht_s  = sensor_data.get("dht11", {})
     mq2    = sensor_data.get("mq2", {})
     thermo = sensor_data.get("thermocouple", {})
 
-    pump_reasons = []
+    pump_reasons   = []
     buzzer_reasons = []
+    is_fire_detected = False
 
-    # 1. Evaluasi Kelembapan Tanah (Hysteresis)
-    if soil.get("status") != "error" and soil.get("percentage") is not None:
-        pct = soil["percentage"]
-        if pump_ctrl.is_active:
-            if pct < SOIL_TARGET_WET_PERCENT:
-                pump_reasons.append("Tanah belum basah (" + str(pct) + "% < " + str(SOIL_TARGET_WET_PERCENT) + "%)")
+    # 1. Evaluasi Thermocouple MAX6675
+    # Probe normal   : tc_temp >= 50 C          -> Pompa ON + Buzzer ON
+    # Probe terbalik : tc_temp <= 10 C           -> Pompa ON + Buzzer ON
+    # Status ERROR   : terputus/open-circuit     -> Pompa ON + Buzzer ON (anggap kondisi berbahaya)
+    tc_status = thermo.get("status", "error")
+    tc_temp   = thermo.get("temperature")
+    tc_valid  = (tc_status not in ("error",)) and (tc_temp is not None)
+
+    if not tc_valid:
+        # Sensor error / probe terputus -> aktifkan pompa + buzzer sebagai tindakan pengamanan
+        is_fire_detected = True
+        tc_err_detail = thermo.get("error", "Sensor error")
+        msg_err = "THERMOCOUPLE ERROR/PUTUS (" + str(tc_err_detail) + ") -> POMPA + BUZZER ON (Fail-Safe)"
+        pump_reasons.append(msg_err)
+        buzzer_reasons.append(msg_err)
+    else:
+        if tc_temp >= THERMO_FIRE_THRESHOLD or tc_temp <= THERMO_FIRE_REVERSED or thermo.get("fire_detected", False):
+            is_fire_detected = True
+            if tc_temp <= THERMO_FIRE_REVERSED:
+                msg_fire = "PROBE TERBALIK PANAS (" + str(tc_temp) + "C <= " + str(THERMO_FIRE_REVERSED) + "C) -> POMPA + BUZZER ON"
+            else:
+                msg_fire = "THERMOCOUPLE PANAS (" + str(tc_temp) + "C >= " + str(THERMO_FIRE_THRESHOLD) + "C) -> POMPA + BUZZER ON"
+            pump_reasons.append(msg_fire)
+            buzzer_reasons.append(msg_fire)
+        elif (pump_ctrl.is_active or buzzer_ctrl.is_active) and tc_temp > THERMO_TEMP_SAFE_THRESHOLD:
+            # Hysteresis: tetap aktif sampai suhu turun ke bawah batas aman
+            msg_tc_warm = "Thermocouple masih panas (" + str(tc_temp) + "C > " + str(THERMO_TEMP_SAFE_THRESHOLD) + "C)"
+            pump_reasons.append(msg_tc_warm)
+            buzzer_reasons.append(msg_tc_warm)
+
+    # 2. Evaluasi Gas MQ-2 (PRD v2.2 FR-06: Gas tinggi -> Buzzer ON SAJA, Pompa TIDAK)
+    mq2_raw = mq2.get("raw")
+    mq2_valid = mq2.get("status") != "error" and mq2_raw is not None
+    if mq2_valid and mq2_raw >= MQ2_GAS_THRESHOLD:
+        buzzer_reasons.append("Gas tinggi (" + str(mq2_raw) + " ADC >= " + str(MQ2_GAS_THRESHOLD) + ")")
+
+    # 3. Evaluasi Kelembapan Tanah (PRD v2.2 FR-07: Tanah kering -> Pompa ON SAJA, Buzzer TIDAK)
+    soil_pct = soil.get("percentage")
+    soil_valid = soil.get("status") != "error" and soil_pct is not None
+    if soil_valid:
+        if pump_ctrl.is_active and not is_fire_detected:
+            # Hysteresis: pompa tetap menyala sampai tanah cukup basah (target 65%)
+            if soil_pct < SOIL_TARGET_WET_PERCENT:
+                pump_reasons.append("Tanah belum basah (" + str(soil_pct) + "% < " + str(SOIL_TARGET_WET_PERCENT) + "%)")
         else:
-            if pct <= SOIL_TRIGGER_DRY_PERCENT:
-                pump_reasons.append("Tanah kering (" + str(pct) + "%)")
+            if soil_pct <= SOIL_TRIGGER_DRY_PERCENT:
+                pump_reasons.append("Tanah kering (" + str(soil_pct) + "%) -> Penyiraman otomatis")
 
-    # 2. Evaluasi Suhu Lingkungan DHT11
-    if dht_s.get("status") != "error" and dht_s.get("temperature") is not None:
-        temp_dht = dht_s["temperature"]
-        if pump_ctrl.is_active or buzzer_ctrl.is_active:
-            if temp_dht > DHT_TEMP_SAFE_THRESHOLD:
-                msg_dht_warm = "Suhu udara masih hangat (" + str(temp_dht) + "°C)"
-                pump_reasons.append(msg_dht_warm)
-                buzzer_reasons.append(msg_dht_warm)
-        else:
-            if temp_dht >= DHT_TEMP_HIGH_THRESHOLD:
-                msg_dht_high = "Suhu udara tinggi (" + str(temp_dht) + "°C)"
-                pump_reasons.append(msg_dht_high)
-                buzzer_reasons.append(msg_dht_high)
-
-    # 3. Evaluasi Suhu Thermocouple MAX6675
-    if thermo.get("status") != "error" and thermo.get("temperature") is not None:
-        temp_tc = thermo["temperature"]
-        if pump_ctrl.is_active or buzzer_ctrl.is_active:
-            if temp_tc > THERMO_TEMP_SAFE_THRESHOLD:
-                msg_tc_warm = "Thermocouple masih panas (" + str(temp_tc) + "°C)"
-                pump_reasons.append(msg_tc_warm)
-                buzzer_reasons.append(msg_tc_warm)
-        else:
-            if temp_tc >= THERMO_TEMP_HIGH_THRESHOLD:
-                msg_tc_high = "Suhu thermocouple tinggi (" + str(temp_tc) + "°C)"
-                pump_reasons.append(msg_tc_high)
-                buzzer_reasons.append(msg_tc_high)
-
-    # 4. Evaluasi Gas MQ-2
-    if mq2.get("status") != "error" and mq2.get("gas_detected"):
-        buzzer_reasons.append("Gas terdeteksi (" + str(mq2.get("raw")) + " ADC)")
-
-    # 5. Pengaman Timeout Pompa
+    # 4. Pengaman Timeout Pompa (FR-10: pompa tidak menyala terus menerus)
     if pump_ctrl.is_active and pump_ctrl.get_runtime_seconds() >= PUMP_MAX_RUNTIME_SEC:
         pump_ctrl.turn_off("Batas waktu maksimal " + str(PUMP_MAX_RUNTIME_SEC) + "s tercapai")
         pump_reasons = []
 
-    # 6. Pengaman Cooldown Pompa
+    # 5. Pengaman Cooldown Pompa (Kecuali kondisi darurat thermocouple panas!)
     if not pump_ctrl.is_active and pump_ctrl.get_cooldown_remaining_sec() > 0:
-        pump_reasons = []
+        if not is_fire_detected:
+            pump_reasons = []
 
-    # 7. Eksekusi Pompa
+    # 6. Eksekusi Pompa
     if len(pump_reasons) > 0:
         pump_ctrl.active_reasons = pump_reasons
         if not pump_ctrl.is_active:
             pump_ctrl.turn_on(" + ".join(pump_reasons))
     else:
         if pump_ctrl.is_active:
-            pump_ctrl.turn_off("Kondisi lingkungan normal & tanah tercukupi")
+            pump_ctrl.turn_off("Kondisi lingkungan normal")
 
-    # 8. Eksekusi Buzzer
+    # 7. Eksekusi Buzzer (sirine darurat jika thermocouple panas, nada biasa jika gas)
     if len(buzzer_reasons) > 0:
         buzzer_ctrl.active_reasons = buzzer_reasons
-        if not buzzer_ctrl.is_active:
-            buzzer_ctrl.turn_on(" + ".join(buzzer_reasons))
+        buzzer_ctrl.turn_on(" + ".join(buzzer_reasons), emergency=is_fire_detected)
     else:
         if buzzer_ctrl.is_active:
             buzzer_ctrl.turn_off("Kondisi lingkungan kembali aman")
@@ -1109,22 +1239,25 @@ def main():
     print("  - Buzzer IO       : GPIO " + str(PIN_BUZZER))
     print("=" * 60 + "\n")
 
-    # 1. Inisialisasi Aktuator Pompa & Buzzer
-    print("[1/5] Inisialisasi Aktuator (Pompa & Buzzer)...")
+    # Bebaskan memori heap terlebih dahulu sebelum mengalokasikan driver Wi-Fi ESP32
+    gc.collect()
+
+    # 1. Hubungkan Wi-Fi lebih dulu agar stack Wi-Fi mendapat blok RAM internal utuh
+    print("[1/5] Menghubungkan ke Wi-Fi '" + str(WIFI_SSID) + "'...")
+    wifi_mgr = WiFiManager(ssid=WIFI_SSID, password=WIFI_PASSWORD)
+    wifi_mgr.connect(timeout_s=WIFI_TIMEOUT_SEC)
+
+    # 2. Inisialisasi Aktuator Pompa & Buzzer
+    print("[2/5] Inisialisasi Aktuator (Pompa & Buzzer)...")
     pump_ctrl = PumpController(pin_num=PIN_RELAY, active_low=RELAY_ACTIVE_LOW)
     buzzer_ctrl = BuzzerController(pin_num=PIN_BUZZER, active_high=BUZZER_ACTIVE_HIGH, use_pwm=BUZZER_USE_PWM)
 
     # Uji coba bunyi bip singkat penanda sistem aktif
     buzzer_ctrl.beep(80)
 
-    # 2. Inisialisasi Seluruh Sensor
-    print("[2/5] Inisialisasi Sensor...")
+    # 3. Inisialisasi Seluruh Sensor
+    print("[3/5] Inisialisasi Sensor...")
     sensor_mgr = SensorManager(boot_ticks=boot_ticks)
-
-    # 3. Hubungkan Wi-Fi
-    print("[3/5] Menghubungkan ke Wi-Fi '" + str(WIFI_SSID) + "'...")
-    wifi_mgr = WiFiManager(ssid=WIFI_SSID, password=WIFI_PASSWORD)
-    wifi_mgr.connect(timeout_s=WIFI_TIMEOUT_SEC)
 
     # 4. Jalankan HTTP REST API Server
     print("[4/5] Memulai HTTP Server port 80...")
@@ -1152,6 +1285,9 @@ def main():
     try:
         while True:
             now = time.ticks_ms()
+
+            # Modulasi frekuensi sirine buzzer (suara ekstra nyaring & menusuk)
+            buzzer_ctrl.update()
 
             # A. Layani request HTTP secara non-blocking
             http_server.process_incoming()

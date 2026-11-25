@@ -337,6 +337,39 @@ class MonitorProvider extends ChangeNotifier {
       _alerts.insert(0, created);
     }
 
+    // Deteksi darurat api pada thermocouple (suhu >= 50°C atau fireDetected)
+    final double? thermoVal = snapshot.valueOf('thermocouple');
+    final bool isFireNow = snapshot.fireDetected || (thermoVal != null && thermoVal >= 50.0);
+    final AlertEvent? currentFire = _active['fireEmergency'];
+
+    if (!isFireNow) {
+      if (currentFire != null) {
+        currentFire.resolvedAt = snapshot.timestamp;
+        _active.remove('fireEmergency');
+      }
+    } else {
+      if (currentFire == null) {
+        final AlertEvent fireEvent = AlertEvent(
+          id: ++_alertSeq,
+          kind: AlertKind.fireEmergency,
+          level: SensorLevel.warning,
+          startedAt: snapshot.timestamp,
+          sensorId: 'thermocouple',
+          value: thermoVal,
+          thresholdValue: 50.0,
+        );
+        _active['fireEmergency'] = fireEvent;
+        _alerts.insert(0, fireEvent);
+      } else {
+        if (thermoVal != null) {
+          currentFire.lastValue = thermoVal;
+          if (currentFire.peakValue == null || thermoVal > currentFire.peakValue!) {
+            currentFire.peakValue = thermoVal;
+          }
+        }
+      }
+    }
+
     while (_alerts.length > 200) {
       _alerts.removeLast();
     }
