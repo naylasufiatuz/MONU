@@ -1,832 +1,1190 @@
 # ==============================================================================
-# SISTEM IoT MONITORING DAN KONTROL PERANGKAT (MONU) - ESP32
-# Program Utama: main.py
-# Bahasa: MicroPython
+# SISTEM MONITORING DAN OTOMASI BERBASIS IoT ESP32 (MONU)
+# File Utama: main.py (All-in-One MicroPython Standalone)
 #
-# Fitur Utama:
-# 1. Koneksi Wi-Fi otomatis menggunakan DHCP (tanpa IP statis).
-# 2. Mekanisme reconnect otomatis tanpa me-restart ESP32.
-# 3. HTTP Web Server pada port 80 (Non-blocking).
-# 4. Endpoint '/' untuk dashboard informasi perangkat via browser.
-# 5. Endpoint '/api/status' untuk komunikasi JSON dengan aplikasi client.
-# 6. Struktur pembacaan sensor lengkap (Soil Moisture, DHT11, MQ-2, MAX6675, Relay)
-#    tanpa data palsu (menampilkan status 'belum_tersedia' jika sensor belum terpasang).
+# Seluruh fitur: Sensor, Aktuator (Relay Pompa & Buzzer), Wi-Fi, HTTP Server,
+# dan Logika Otomasi terintegrasi dalam file ini tanpa modul eksternal.
+# 100% Kompatibel dengan parser MicroPython (Bebas SyntaxError).
 # ==============================================================================
 
+import machine
+import dht
 import network
 import usocket as socket
 import ujson as json
 import utime as time
-import machine
-import dht
 import gc
 
 # ==============================================================================
 # 1. PENGATURAN WI-FI & IDENTITAS PERANGKAT
 # ==============================================================================
-# Silakan ubah SSID dan PASSWORD sesuai jaringan Wi-Fi / Hotspot Anda.
+# Silakan sesuaikan SSID dan Password Wi-Fi / Hotspot Anda:
 WIFI_SSID     = "NAMA_WIFI_ANDA"
 WIFI_PASSWORD = "PASSWORD_WIFI_ANDA"
 
-# Identitas perangkat (sesuai konfigurasi aplikasi: monu-node-1)
 DEVICE_ID     = "monu-node-1"
 DEVICE_NAME   = "ESP32 MONU Node"
 SERVER_PORT   = 80
 
-# Interval pemeriksaan koneksi Wi-Fi (dalam milidetik: 10 detik)
-WIFI_CHECK_INTERVAL_MS = 10000
+WIFI_CHECK_INTERVAL_MS = 10000   # Cek koneksi Wi-Fi tiap 10 detik
+WIFI_TIMEOUT_SEC       = 15      # Batas waktu percobaan awal koneksi
 
 # ==============================================================================
-# 1.1 PENGATURAN SUPABASE CLOUD (POSTGRESQL TELEMETRY)
+# 2. KONFIGURASI PIN GPIO (SESUAI PRD SEKSI 4)
 # ==============================================================================
-SUPABASE_URL = "https://nhtyfguvhqsiuljhqzqb.supabase.co"
-SUPABASE_KEY = "sb_publishable_ZKNFGue6e70A7aTVH71D_g_4gnMc20T"
-ENABLE_SUPABASE = True
-SUPABASE_SYNC_INTERVAL_MS = 5000  # Kirim data tiap 5 detik
-_last_supabase_sync = 0
-
-# ==============================================================================
-# 2. DEFINISI PIN GPIO (SESUAI SPESIFIKASI SISTEM)
-# ==============================================================================
-# PERINGATAN: Jangan mengubah nomor GPIO tanpa alasan teknis yang jelas.
-PIN_SOIL_MOISTURE = 35   # ADC Input Only (Sensor Kelembapan Tanah)
-PIN_DHT11         = 33   # Digital Input/Output (Suhu & Kelembapan Udara)
-PIN_MQ2           = 34   # ADC Input Only (Sensor Gas & Asap)
-PIN_MAX6675_SCK   = 18   # SPI Clock (Thermocouple K-Type)
-PIN_MAX6675_CS    = 21   # SPI Chip Select (Thermocouple K-Type)
-PIN_MAX6675_SO    = 23   # SPI MISO / Data Out (Thermocouple K-Type)
-PIN_RELAY         = 19   # Digital Output (Relay Pompa Air)
+PIN_MAX6675_SCK   = 18   # MAX6675 SPI Clock (SCK)
+PIN_MAX6675_SO    = 19   # MAX6675 SPI Data Out / MISO (SO)
+PIN_MAX6675_CS    = 5    # MAX6675 SPI Chip Select (CS)
+PIN_MQ2           = 34   # MQ-2 Analog Out (AO) - ADC1_CH6 (Input Only)
+PIN_DHT11         = 4    # DHT11 DATA - Digital I/O (1-Wire)
+PIN_SOIL_MOISTURE = 35   # Soil Moisture Analog Out (AO) - ADC1_CH7 (Input Only)
+PIN_RELAY         = 26   # Relay Module IN - Digital Output Pompa
+PIN_BUZZER        = 27   # Buzzer IO - Digital / PWM Output
 
 # ==============================================================================
-# 3. FLAG SENSOR FISIK
+# 3. PENGATURAN AKTUATOR (RELAY POMPA & BUZZER)
 # ==============================================================================
-# Pin analog (ADC34 & ADC35) yang tidak terhubung ke sensor fisik akan membaca
-# tegangan mengambang (floating noise). Agar sistem TIDAK menghasilkan data palsu,
-# ubah nilai di bawah menjadi True HANYA ketika modul sensor fisik sudah dipasang.
-SOIL_SENSOR_ATTACHED = False
-MQ2_SENSOR_ATTACHED  = False
+# Konfigurasi Relay:
+# Sebagian besar modul relay bersifat Active-LOW:
+#   True  = Active-LOW (0 = Pompa ON, 1 = Pompa OFF)
+#   False = Active-HIGH (1 = Pompa ON, 0 = Pompa OFF)
+RELAY_ACTIVE_LOW     = True
+PUMP_MAX_RUNTIME_SEC = 20   # Pengaman: Maksimal pompa menyala berturut-turut (20 detik)
+PUMP_COOLDOWN_SEC    = 15   # Jeda istirahat wajib setelah pompa menyala (15 detik)
 
-# ==============================================================================
-# 4. VARIABEL GLOBAL & HARDWARE INSTANCES
-# ==============================================================================
-wlan = None
-boot_ticks = time.ticks_ms()
-last_wifi_check_ticks = 0
-relay_state = 0  # 0 = OFF (Pompa Mati), 1 = ON (Pompa Hidup)
-
-# Objek modul hardware
-adc_soil = None
-adc_mq2  = None
-dht_sensor = None
-pin_max_sck = None
-pin_max_cs  = None
-pin_max_so  = None
-pin_relay   = None
-
+# Konfigurasi Buzzer 3 Pin:
+# - Active Buzzer: Cukup sinyal Digital HIGH/LOW (BUZZER_USE_PWM = False)
+# - Passive Buzzer: Membutuhkan frekuensi nada PWM (BUZZER_USE_PWM = True)
+BUZZER_ACTIVE_HIGH   = True
+BUZZER_USE_PWM       = False  # Ubah ke True jika modul buzzer Anda tipe pasif
+BUZZER_PWM_FREQ      = 2000   # Frekuensi nada alarm buzzer pasif (2000 Hz)
 
 # ==============================================================================
-# 5. INISIALISASI HARDWARE
+# 4. AMBANG BATAS & KALIBRASI SENSOR
 # ==============================================================================
-def init_hardware():
-    """
-    Inisialisasi GPIO untuk seluruh sensor dan aktuator relay.
-    Menghindari kegagalan fatal jika pin belum terhubung secara fisik.
-    """
-    global adc_soil, adc_mq2, dht_sensor
-    global pin_max_sck, pin_max_cs, pin_max_so, pin_relay
+# A. Soil Moisture (Sensor Kapasitif / Resistif)
+SOIL_DRY_ADC             = 3300   # Nilai ADC saat tanah kering (0%)
+SOIL_WET_ADC             = 1300   # Nilai ADC saat tanah basah maksimal (100%)
+SOIL_TRIGGER_DRY_PERCENT = 30.0   # Persen tanah kering (Pompa ON)
+SOIL_TARGET_WET_PERCENT  = 65.0   # Persen target kelembapan (Pompa OFF)
 
-    print("[Hardware] Menginisialisasi pin GPIO...")
+# B. DHT11 (Suhu & Kelembapan Udara)
+DHT_TEMP_HIGH_THRESHOLD  = 36.0   # Suhu udara tinggi (°C) -> Pompa ON & Buzzer ON
+DHT_TEMP_SAFE_THRESHOLD  = 32.0   # Suhu udara kembali normal (°C) -> OFF
+DHT_READ_INTERVAL_MS     = 2500   # Jeda minimum pembacaan DHT11 (2.5 detik)
 
-    # Inisialisasi Relay (GPIO 19)
-    try:
-        pin_relay = machine.Pin(PIN_RELAY, machine.Pin.OUT)
-        pin_relay.value(0)  # Default: Pompa mati
-        print(f"  - Relay Pompa     : GPIO {PIN_RELAY} (Output, Default OFF)")
-    except Exception as e:
-        print(f"  - Relay Pompa     : Gagal ({e})")
+# C. MQ-2 (Deteksi Gas / Asap)
+MQ2_GAS_THRESHOLD        = 1800   # Ambang batas deteksi gas (ADC mentah) -> Buzzer ON
+MQ2_WARMUP_SEC           = 20     # Waktu pemanasan awal sensor MQ-2 saat startup
 
-    # Inisialisasi ADC Soil Moisture (GPIO 35)
-    try:
-        adc_soil = machine.ADC(machine.Pin(PIN_SOIL_MOISTURE))
-        adc_soil.atten(machine.ADC.ATTN_11DB)  # Rentang 0 - 3.3V
-        print(f"  - Soil Moisture   : GPIO {PIN_SOIL_MOISTURE} (ADC Input)")
-    except Exception as e:
-        print(f"  - Soil Moisture   : Gagal ({e})")
+# D. Thermocouple K-Type + MAX6675
+THERMO_TEMP_HIGH_THRESHOLD = 60.0 # Suhu thermocouple tinggi (°C) -> Pompa ON & Buzzer ON
+THERMO_TEMP_SAFE_THRESHOLD = 45.0 # Suhu thermocouple kembali aman (°C) -> OFF
 
-    # Inisialisasi ADC MQ-2 (GPIO 34)
-    try:
-        adc_mq2 = machine.ADC(machine.Pin(PIN_MQ2))
-        adc_mq2.atten(machine.ADC.ATTN_11DB)  # Rentang 0 - 3.3V
-        print(f"  - MQ-2 Gas/Asap   : GPIO {PIN_MQ2} (ADC Input)")
-    except Exception as e:
-        print(f"  - MQ-2 Gas/Asap   : Gagal ({e})")
-
-    # Inisialisasi DHT11 (GPIO 33)
-    try:
-        dht_sensor = dht.DHT11(machine.Pin(PIN_DHT11))
-        print(f"  - DHT11           : GPIO {PIN_DHT11} (Digital 1-Wire)")
-    except Exception as e:
-        print(f"  - DHT11           : Gagal ({e})")
-
-    # Inisialisasi SPI MAX6675 Thermocouple (SCK=18, CS=21, SO=23)
-    try:
-        pin_max_sck = machine.Pin(PIN_MAX6675_SCK, machine.Pin.OUT)
-        pin_max_cs  = machine.Pin(PIN_MAX6675_CS, machine.Pin.OUT)
-        pin_max_so  = machine.Pin(PIN_MAX6675_SO, machine.Pin.IN)
-        pin_max_cs.value(1)   # CS idle high
-        pin_max_sck.value(0)  # SCK idle low
-        print(f"  - MAX6675 Thermo  : SCK={PIN_MAX6675_SCK}, CS={PIN_MAX6675_CS}, SO={PIN_MAX6675_SO}")
-    except Exception as e:
-        print(f"  - MAX6675 Thermo  : Gagal ({e})")
-
-    print("[Hardware] Inisialisasi pin selesai.\n")
+# Waktu Siklus Pemantauan
+SENSOR_READ_INTERVAL_MS  = 1000   # Baca sensor & evaluasi logika setiap 1 detik
+SERIAL_LOG_INTERVAL_MS   = 3000   # Cetak Serial Monitor setiap 3 detik
 
 
 # ==============================================================================
-# 6. FUNGSI PEMBACAAN SENSOR & KONTROL RELAY
+# 5. KELAS AKTUATOR: KONTROLER RELAY POMPA AIR
 # ==============================================================================
-def read_soil_moisture():
-    """
-    Membaca nilai sensor kelembapan tanah (ADC GPIO 35).
-    Jika belum dipasang (SOIL_SENSOR_ATTACHED == False), mengembalikan status belum tersedia.
-    """
-    if not SOIL_SENSOR_ATTACHED or adc_soil is None:
+class PumpController:
+    def __init__(self, pin_num=PIN_RELAY, active_low=RELAY_ACTIVE_LOW):
+        self.pin_num = pin_num
+        self.active_low = active_low
+        self.is_active = False
+        self.start_ticks = 0
+        self.last_stop_ticks = 0
+        self.active_reasons = []
+
+        self.off_val = 1 if self.active_low else 0
+        self.on_val  = 0 if self.active_low else 1
+
+        try:
+            # Pengaman boot: Pin langsung diberi nilai MATI saat inisialisasi
+            self.pin = machine.Pin(self.pin_num, machine.Pin.OUT, value=self.off_val)
+            self.pin.value(self.off_val)
+            relay_type_str = "Active-Low" if active_low else "Active-High"
+            print("[Actuator] Relay Pompa GPIO " + str(pin_num) + " siap (" + relay_type_str + ", Status: OFF)")
+        except Exception as e:
+            print("[Actuator] Gagal inisialisasi relay: " + str(e))
+            self.pin = None
+
+    def turn_on(self, reason="Manual"):
+        if not self.pin:
+            return False
+        if not self.is_active:
+            self.pin.value(self.on_val)
+            self.is_active = True
+            self.start_ticks = time.ticks_ms()
+            print("[Pump] >>> POMPA AIR DIAKTIFKAN (ON) | Alasan: " + str(reason))
+        return True
+
+    def turn_off(self, reason="Kondisi normal"):
+        if not self.pin:
+            return False
+        if self.is_active:
+            self.pin.value(self.off_val)
+            self.is_active = False
+            self.last_stop_ticks = time.ticks_ms()
+            self.active_reasons = []
+            print("[Pump] <<< POMPA AIR DIMATIKAN (OFF) | Alasan: " + str(reason))
+        return True
+
+    def get_runtime_seconds(self):
+        if not self.is_active:
+            return 0
+        return time.ticks_diff(time.ticks_ms(), self.start_ticks) // 1000
+
+    def get_cooldown_remaining_sec(self):
+        if self.is_active or self.last_stop_ticks == 0:
+            return 0
+        elapsed = time.ticks_diff(time.ticks_ms(), self.last_stop_ticks) // 1000
+        rem = PUMP_COOLDOWN_SEC - elapsed
+        return max(0, rem)
+
+    def get_status(self):
         return {
-            "name": "Soil Moisture",
-            "gpio": PIN_SOIL_MOISTURE,
-            "status": "belum_tersedia",
-            "raw_adc": None,
-            "unit": "ADC"
-        }
-    try:
-        val = adc_soil.read()
-        return {
-            "name": "Soil Moisture",
-            "gpio": PIN_SOIL_MOISTURE,
-            "status": "tersedia",
-            "raw_adc": val,
-            "unit": "ADC"
-        }
-    except Exception as e:
-        return {
-            "name": "Soil Moisture",
-            "gpio": PIN_SOIL_MOISTURE,
-            "status": "belum_tersedia",
-            "raw_adc": None,
-            "error": str(e)
+            "name": "Pompa Air (Relay)",
+            "gpio": self.pin_num,
+            "active": self.is_active,
+            "state": 1 if self.is_active else 0,
+            "state_label": "ON" if self.is_active else "OFF",
+            "active_reasons": self.active_reasons,
+            "runtime_seconds": self.get_runtime_seconds(),
+            "in_cooldown": self.get_cooldown_remaining_sec() > 0,
+            "cooldown_remaining_sec": self.get_cooldown_remaining_sec()
         }
 
 
-def read_dht11():
-    """
-    Membaca suhu dan kelembapan udara dari sensor DHT11 (GPIO 33).
-    Jika sensor tidak merespons (belum terhubung fisik), mengembalikan belum tersedia.
-    """
-    if dht_sensor is None:
+# ==============================================================================
+# 6. KELAS AKTUATOR: KONTROLER BUZZER 3-PIN
+# ==============================================================================
+class BuzzerController:
+    def __init__(self, pin_num=PIN_BUZZER, active_high=BUZZER_ACTIVE_HIGH, use_pwm=BUZZER_USE_PWM):
+        self.pin_num = pin_num
+        self.active_high = active_high
+        self.use_pwm = use_pwm
+        self.is_active = False
+        self.active_reasons = []
+        self.pwm = None
+
+        self.on_val = 1 if self.active_high else 0
+        self.off_val = 0 if self.active_high else 1
+
+        try:
+            self.pin = machine.Pin(self.pin_num, machine.Pin.OUT, value=self.off_val)
+            self.pin.value(self.off_val)
+            buzzer_type_str = "PWM" if use_pwm else "Digital"
+            print("[Actuator] Buzzer GPIO " + str(pin_num) + " siap (" + buzzer_type_str + ", Status: OFF)")
+        except Exception as e:
+            print("[Actuator] Gagal inisialisasi buzzer: " + str(e))
+            self.pin = None
+
+    def turn_on(self, reason="Alarm"):
+        if not self.pin:
+            return False
+        if not self.is_active:
+            if self.use_pwm:
+                try:
+                    self.pwm = machine.PWM(machine.Pin(self.pin_num), freq=BUZZER_PWM_FREQ, duty=512)
+                except Exception as e:
+                    print("[Buzzer] Error PWM: " + str(e))
+            else:
+                self.pin.value(self.on_val)
+            self.is_active = True
+            print("[Buzzer] >>> BUZZER MENYALA (ON) | Alasan: " + str(reason))
+        return True
+
+    def turn_off(self, reason="Normal"):
+        if not self.pin:
+            return False
+        if self.is_active:
+            if self.use_pwm and self.pwm:
+                try:
+                    self.pwm.deinit()
+                except:
+                    pass
+                self.pwm = None
+            self.pin = machine.Pin(self.pin_num, machine.Pin.OUT, value=self.off_val)
+            self.pin.value(self.off_val)
+            self.is_active = False
+            self.active_reasons = []
+            print("[Buzzer] <<< BUZZER MATI (OFF) | Alasan: " + str(reason))
+        return True
+
+    def beep(self, duration_ms=100):
+        """Bunyi 'beep' singkat untuk feedback startup."""
+        self.turn_on("Beep Feedback")
+        time.sleep_ms(duration_ms)
+        self.turn_off("Beep End")
+
+    def get_status(self):
         return {
-            "name": "DHT11",
-            "gpio": PIN_DHT11,
-            "status": "belum_tersedia",
-            "temperature": None,
-            "humidity": None
-        }
-    try:
-        dht_sensor.measure()
-        temp = dht_sensor.temperature()
-        hum  = dht_sensor.humidity()
-        return {
-            "name": "DHT11",
-            "gpio": PIN_DHT11,
-            "status": "tersedia",
-            "temperature": temp,
-            "humidity": hum,
-            "temp_unit": "°C",
-            "humidity_unit": "%RH"
-        }
-    except OSError:
-        # OSError terjadi saat DHT11 tidak dicolokkan ke pin atau timeout komunikasi
-        return {
-            "name": "DHT11",
-            "gpio": PIN_DHT11,
-            "status": "belum_tersedia",
-            "temperature": None,
-            "humidity": None,
-            "temp_unit": "°C",
-            "humidity_unit": "%RH"
+            "name": "Buzzer Peringatan",
+            "gpio": self.pin_num,
+            "active": self.is_active,
+            "state_label": "ON" if self.is_active else "OFF",
+            "active_reasons": self.active_reasons
         }
 
 
-def read_mq2():
-    """
-    Membaca nilai analog sensor MQ-2 (ADC GPIO 34).
-    Jika belum dipasang (MQ2_SENSOR_ATTACHED == False), mengembalikan status belum tersedia.
-    """
-    if not MQ2_SENSOR_ATTACHED or adc_mq2 is None:
-        return {
-            "name": "MQ-2 Gas / Asap",
-            "gpio": PIN_MQ2,
-            "status": "belum_tersedia",
-            "raw_adc": None,
-            "unit": "ADC"
-        }
-    try:
-        val = adc_mq2.read()
-        return {
-            "name": "MQ-2 Gas / Asap",
-            "gpio": PIN_MQ2,
-            "status": "tersedia",
-            "raw_adc": val,
-            "unit": "ADC"
-        }
-    except Exception as e:
-        return {
-            "name": "MQ-2 Gas / Asap",
-            "gpio": PIN_MQ2,
-            "status": "belum_tersedia",
-            "raw_adc": None,
-            "error": str(e)
-        }
+# ==============================================================================
+# 7. KELAS PEMBACAAN SELURUH SENSOR
+# ==============================================================================
+class SensorManager:
+    def __init__(self, boot_ticks):
+        self.boot_ticks = boot_ticks
 
+        # 1. ADC Soil Moisture (GPIO 35)
+        try:
+            self.adc_soil = machine.ADC(machine.Pin(PIN_SOIL_MOISTURE))
+            self.adc_soil.atten(machine.ADC.ATTN_11DB)
+            print("[Sensors] Soil Moisture ADC GPIO " + str(PIN_SOIL_MOISTURE) + " siap.")
+        except Exception as e:
+            print("[Sensors] Gagal init ADC Soil: " + str(e))
+            self.adc_soil = None
 
-def read_thermocouple():
-    """
-    Membaca data suhu dari modul thermocouple MAX6675 via SPI bitbang.
-    Format data 16-bit: D14..D3 (suhu), D2 (status open-circuit thermocouple).
-    """
-    if pin_max_cs is None or pin_max_sck is None or pin_max_so is None:
-        return {
-            "name": "Thermocouple MAX6675",
-            "gpio": {"sck": PIN_MAX6675_SCK, "cs": PIN_MAX6675_CS, "so": PIN_MAX6675_SO},
-            "status": "belum_tersedia",
-            "temperature": None,
-            "unit": "°C"
-        }
-    try:
-        pin_max_cs.value(0)
-        time.sleep_us(10)
-        data = 0
-        for _ in range(16):
-            pin_max_sck.value(1)
-            time.sleep_us(5)
-            data = (data << 1) | pin_max_so.value()
-            pin_max_sck.value(0)
-            time.sleep_us(5)
-        pin_max_cs.value(1)
+        # 2. DHT11 (GPIO 4)
+        try:
+            self.dht_sensor = dht.DHT11(machine.Pin(PIN_DHT11))
+            print("[Sensors] DHT11 GPIO " + str(PIN_DHT11) + " siap.")
+        except Exception as e:
+            print("[Sensors] Gagal init DHT11: " + str(e))
+            self.dht_sensor = None
+        self.dht_last_ticks = 0
+        self.dht_cached_temp = None
+        self.dht_cached_hum = None
 
-        # Jika data bernilai 0, 0xFFFF (semua 1), atau bit D2 bernilai 1 (kabel lepas/tidak terpasang)
-        if data == 0 or data == 0xFFFF or (data & 0x0004):
+        # 3. ADC MQ-2 (GPIO 34)
+        try:
+            self.adc_mq2 = machine.ADC(machine.Pin(PIN_MQ2))
+            self.adc_mq2.atten(machine.ADC.ATTN_11DB)
+            print("[Sensors] MQ-2 ADC GPIO " + str(PIN_MQ2) + " siap.")
+        except Exception as e:
+            print("[Sensors] Gagal init ADC MQ-2: " + str(e))
+            self.adc_mq2 = None
+
+        # 4. MAX6675 SPI Thermocouple (SCK=18, SO=19, CS=5)
+        try:
+            self.pin_sck = machine.Pin(PIN_MAX6675_SCK, machine.Pin.OUT)
+            self.pin_cs  = machine.Pin(PIN_MAX6675_CS, machine.Pin.OUT)
+            self.pin_so  = machine.Pin(PIN_MAX6675_SO, machine.Pin.IN)
+            self.pin_cs.value(1)   # Idle HIGH
+            self.pin_sck.value(0)  # Idle LOW
+            self.thermo_ok = True
+            print("[Sensors] MAX6675 SPI siap (SCK=" + str(PIN_MAX6675_SCK) + ", SO=" + str(PIN_MAX6675_SO) + ", CS=" + str(PIN_MAX6675_CS) + ").")
+        except Exception as e:
+            print("[Sensors] Gagal init MAX6675: " + str(e))
+            self.thermo_ok = False
+
+        self.data_cache = {}
+        self.last_thermo_val = None
+
+    def read_soil(self):
+        """Membaca ADC kelembapan tanah, menghitung persentase, dan klasifikasi kering/lembab/basah."""
+        if not self.adc_soil:
+            return {"raw": None, "raw_adc": None, "percentage": None, "status": "error", "error": "ADC belum aktif"}
+        try:
+            samples = [self.adc_soil.read() for _ in range(5)]
+            raw = sum(samples) // len(samples)
+
+            if SOIL_DRY_ADC != SOIL_WET_ADC:
+                pct = ((SOIL_DRY_ADC - raw) / (SOIL_DRY_ADC - SOIL_WET_ADC)) * 100.0
+            else:
+                pct = 0.0
+
+            pct = max(0.0, min(100.0, pct))
+            pct_rounded = round(pct, 1)
+
+            # Klasifikasi kondisi tanah sesuai PRD
+            if pct_rounded <= SOIL_TRIGGER_DRY_PERCENT:
+                status_label = "DRY"
+            elif pct_rounded >= SOIL_TARGET_WET_PERCENT:
+                status_label = "WET"
+            else:
+                status_label = "MOIST"
+
             return {
-                "name": "Thermocouple MAX6675",
-                "gpio": {"sck": PIN_MAX6675_SCK, "cs": PIN_MAX6675_CS, "so": PIN_MAX6675_SO},
-                "status": "belum_tersedia",
-                "temperature": None,
-                "unit": "°C"
+                "raw": raw,
+                "raw_adc": raw,
+                "percentage": pct_rounded,
+                "status": status_label,
+                "soil_dry": pct_rounded <= SOIL_TRIGGER_DRY_PERCENT,
+                "unit": "ADC",
+                "error": None
+            }
+        except Exception as e:
+            return {"raw": None, "raw_adc": None, "percentage": None, "status": "error", "soil_dry": False, "error": str(e)}
+
+    def read_dht(self):
+        """Membaca suhu (°C) dan kelembapan (%RH) dari DHT11 dengan proteksi interval."""
+        if not self.dht_sensor:
+            return {"temperature": None, "humidity": None, "status": "error", "error": "Sensor belum terpasang"}
+
+        now = time.ticks_ms()
+        if self.dht_cached_temp is not None and time.ticks_diff(now, self.dht_last_ticks) < DHT_READ_INTERVAL_MS:
+            is_high = self.dht_cached_temp >= DHT_TEMP_HIGH_THRESHOLD
+            return {
+                "temperature": self.dht_cached_temp,
+                "humidity": self.dht_cached_hum,
+                "status": "HIGH" if is_high else "NORMAL",
+                "temp_unit": "°C",
+                "humidity_unit": "%RH",
+                "error": None
             }
 
-        # Mengambil bit 3-14 (12-bit) dengan resolusi 0.25 °C
-        temp_c = ((data >> 3) & 0x0FFF) * 0.25
-        return {
-            "name": "Thermocouple MAX6675",
-            "gpio": {"sck": PIN_MAX6675_SCK, "cs": PIN_MAX6675_CS, "so": PIN_MAX6675_SO},
-            "status": "tersedia",
-            "temperature": temp_c,
-            "unit": "°C"
-        }
-    except Exception as e:
-        return {
-            "name": "Thermocouple MAX6675",
-            "gpio": {"sck": PIN_MAX6675_SCK, "cs": PIN_MAX6675_CS, "so": PIN_MAX6675_SO},
-            "status": "belum_tersedia",
-            "temperature": None,
-            "error": str(e)
-        }
-
-
-def set_relay(state):
-    """
-    Mengontrol status relay pompa air (0 = MATI, 1 = HIDUP).
-    """
-    global relay_state, pin_relay
-    relay_state = 1 if state else 0
-    if pin_relay:
-        pin_relay.value(relay_state)
-        print(f"[Relay] Pompa air diatur ke: {'HIDUP (ON)' if relay_state else 'MATI (OFF)'}")
-        return True
-    return False
-
-
-def get_relay_info():
-    """Mengembalikan status terkini aktuator relay."""
-    return {
-        "name": "Pompa Air (Relay)",
-        "gpio": PIN_RELAY,
-        "status": "tersedia",
-        "state": relay_state,
-        "state_label": "ON" if relay_state == 1 else "OFF"
-    }
-
-
-def get_uptime_seconds():
-    """Menghitung waktu aktif ESP32 dalam detik sejak booting."""
-    now = time.ticks_ms()
-    diff = time.ticks_diff(now, boot_ticks)
-    return diff // 1000
-
-
-def get_uptime_human():
-    """Mengubah detik uptime menjadi format 'Xj Ym Zd'."""
-    sec = get_uptime_seconds()
-    hours = sec // 3600
-    minutes = (sec % 3600) // 60
-    seconds = sec % 60
-    return f"{hours}j {minutes}m {seconds}d"
-
-
-# ==============================================================================
-# 7. MANAJEMEN KONEKSI WI-FI (DHCP & RECONNECT)
-# ==============================================================================
-def connect_wifi(timeout_s=15):
-    """
-    Menghubungkan ESP32 ke jaringan Wi-Fi secara otomatis melalui DHCP.
-    Tidak menggunakan IP statis dan tidak me-restart ESP32 jika gagal.
-    """
-    global wlan
-    if wlan is None:
-        wlan = network.WLAN(network.STA_IF)
-
-    if not wlan.active():
-        wlan.active(True)
-
-    # Set DHCP hostname agar mudah dikenali router
-    try:
-        wlan.config(dhcp_hostname="monu-esp32")
-    except:
-        pass
-
-    if wlan.isconnected():
-        return True
-
-    print(f"[Wi-Fi] Menghubungkan ke SSID: '{WIFI_SSID}'...")
-    wlan.connect(WIFI_SSID, WIFI_PASSWORD)
-
-    start_time = time.time()
-    dots = 0
-    while not wlan.isconnected():
-        if time.time() - start_time > timeout_s:
-            print("\n[Wi-Fi] Gagal terhubung (Waktu habis / Timeout).")
-            print("[Wi-Fi] ESP32 tetap berjalan dan akan mencoba menyambung di latar belakang.")
-            return False
-
-        time.sleep_ms(400)
-        print(".", end="")
-        dots += 1
-        if dots % 25 == 0:
-            print()
-
-    # Berhasil terhubung
-    ip_addr, subnet, gateway, dns = wlan.ifconfig()
-    print("\n")
-    print("==================================================")
-    print("           ESP32 BERHASIL TERHUBUNG WI-FI         ")
-    print("==================================================")
-    print(f" Status Wi-Fi : Terhubung (Connected)")
-    print(f" SSID         : {WIFI_SSID}")
-    print(f" IP Address   : {ip_addr}")
-    print(f" Subnet Mask  : {subnet}")
-    print(f" Gateway      : {gateway}")
-    print(f" DNS Server   : {dns}")
-    print("==================================================\n")
-    return True
-
-
-def get_ip_address():
-    """
-    Mengambil IP Address ESP32 dari konfigurasi DHCP.
-    Mengembalikan string IP Address atau '0.0.0.0' jika belum terhubung.
-    """
-    global wlan
-    if wlan and wlan.isconnected():
-        return wlan.ifconfig()[0]
-    return "0.0.0.0"
-
-
-def check_wifi_connection():
-    """
-    Memeriksa koneksi Wi-Fi secara periodik.
-    Jika koneksi terputus, mencoba menghubungkan kembali secara otomatis tanpa reboot.
-    """
-    global last_wifi_check_ticks, wlan
-    now = time.ticks_ms()
-    if time.ticks_diff(now, last_wifi_check_ticks) < WIFI_CHECK_INTERVAL_MS:
-        return (wlan is not None and wlan.isconnected())
-
-    last_wifi_check_ticks = now
-
-    if wlan is None or not wlan.isconnected():
-        print("[Wi-Fi] Peringatan: Koneksi terputus! Mencoba menghubungkan kembali...")
         try:
-            if wlan is None:
-                wlan = network.WLAN(network.STA_IF)
-            if not wlan.active():
-                wlan.active(True)
+            self.dht_sensor.measure()
+            temp = self.dht_sensor.temperature()
+            hum = self.dht_sensor.humidity()
 
-            wlan.connect(WIFI_SSID, WIFI_PASSWORD)
+            if temp is None or hum is None or (temp == 0 and hum == 0):
+                raise ValueError("Data pembacaan DHT11 tidak valid")
 
-            # Beri kesempatan singkat untuk negosiasi IP
-            attempts = 0
-            while not wlan.isconnected() and attempts < 6:
-                time.sleep_ms(300)
-                attempts += 1
+            self.dht_cached_temp = temp
+            self.dht_cached_hum = hum
+            self.dht_last_ticks = now
 
-            if wlan.isconnected():
-                print(f"[Wi-Fi] Reconnect Berhasil! IP Address baru: {wlan.ifconfig()[0]}")
-                return True
-            else:
-                print("[Wi-Fi] Belum terhubung kembali. Akan dicoba lagi pada siklus berikutnya.")
-                return False
+            is_high = temp >= DHT_TEMP_HIGH_THRESHOLD
+            return {
+                "temperature": temp,
+                "humidity": hum,
+                "status": "HIGH" if is_high else "NORMAL",
+                "temp_unit": "°C",
+                "humidity_unit": "%RH",
+                "error": None
+            }
+        except (OSError, Exception) as e:
+            if self.dht_cached_temp is not None and time.ticks_diff(now, self.dht_last_ticks) < 10000:
+                is_high = self.dht_cached_temp >= DHT_TEMP_HIGH_THRESHOLD
+                return {
+                    "temperature": self.dht_cached_temp,
+                    "humidity": self.dht_cached_hum,
+                    "status": "HIGH" if is_high else "NORMAL",
+                    "temp_unit": "°C",
+                    "humidity_unit": "%RH",
+                    "error": None
+                }
+            return {"temperature": None, "humidity": None, "status": "error", "error": "DHT11 gagal baca (" + str(e) + ")"}
+
+    def read_mq2(self):
+        """Membaca nilai analog ADC MQ-2 (0-4095) dan menangani masa pemanasan sensor."""
+        if not self.adc_mq2:
+            return {"raw": None, "raw_adc": None, "threshold": MQ2_GAS_THRESHOLD, "gas_detected": False, "status": "error"}
+
+        uptime_sec = time.ticks_diff(time.ticks_ms(), self.boot_ticks) // 1000
+        is_warming = uptime_sec < MQ2_WARMUP_SEC
+
+        try:
+            samples = [self.adc_mq2.read() for _ in range(5)]
+            raw = sum(samples) // len(samples)
+
+            if is_warming:
+                rem = MQ2_WARMUP_SEC - uptime_sec
+                return {
+                    "raw": raw,
+                    "raw_adc": raw,
+                    "threshold": MQ2_GAS_THRESHOLD,
+                    "gas_detected": False,
+                    "status": "WARMING_UP (" + str(rem) + "s)",
+                    "error": None
+                }
+
+            is_gas = raw >= MQ2_GAS_THRESHOLD
+            return {
+                "raw": raw,
+                "raw_adc": raw,
+                "threshold": MQ2_GAS_THRESHOLD,
+                "gas_detected": is_gas,
+                "status": "DETECTED" if is_gas else "NORMAL",
+                "unit": "ADC",
+                "error": None
+            }
         except Exception as e:
-            print(f"[Wi-Fi] Error saat reconnect: {e}")
+            return {"raw": None, "raw_adc": None, "threshold": MQ2_GAS_THRESHOLD, "gas_detected": False, "status": "error", "error": str(e)}
+
+    def read_thermocouple(self):
+        """
+        Pembacaan SPI Bitbang MAX6675 sesuai datasheet:
+        - CS ditarik LOW
+        - 16 pulsa clock SCK membaca 16-bit MSB-to-LSB dari SO
+        - Bit D15: Dummy 0
+        - Bit D14..D3: 12-bit besaran suhu (* 0.25 °C)
+        - Bit D2: Open Circuit (1 jika kabel probe terputus)
+
+        PANDUAN FISIK JIKA SUHU TURUN SAAT DIPANASKAN:
+        Jika saat probe dipanaskan api suhunya turun dari 30°C menjadi 1°C:
+        >>> KABEL MERAH DAN BIRU/KUNING TERPASANG TERBALIK PADA TERMINAL BAUT MAX6675! <<<
+        Solusi: Tukar posisi kedua kabel probe pada terminal baut modul MAX6675.
+        """
+        if not self.thermo_ok:
+            return {"temperature": None, "status": "error", "error": "SPI MAX6675 belum terinisialisasi"}
+
+        try:
+            self.pin_cs.value(0)
+            time.sleep_us(10)
+            data = 0
+            for _ in range(16):
+                self.pin_sck.value(1)
+                time.sleep_us(5)
+                data = (data << 1) | self.pin_so.value()
+                self.pin_sck.value(0)
+                time.sleep_us(5)
+            self.pin_cs.value(1)
+
+            # Jika kabel SPI lepas (semua 0 atau semua 1)
+            if data == 0 or data == 0xFFFF:
+                return {"temperature": None, "status": "error", "error": "Modul MAX6675 tidak merespons (Cek kabel SPI)"}
+
+            # Bit D2 == 1: Thermocouple Open Circuit (kabel probe lepas)
+            if data & 0x0004:
+                return {"temperature": None, "status": "error", "error": "Thermocouple Open Circuit (Probe terputus)"}
+
+            # Ekstrak 12-bit suhu (bit 3 s/d 14) dikali resolusi 0.25°C
+            raw_temp = (data >> 3) & 0x0FFF
+            temp_c = raw_temp * 0.25
+
+            # Deteksi diagnostik jika suhu turun abnormal
+            if self.last_thermo_val is not None:
+                if temp_c < (self.last_thermo_val - 10.0) and temp_c < 10.0:
+                    print("[WARNING] Suhu thermocouple anjlok drastis! Periksa polaritas kabel probe T+ dan T-.")
+
+            self.last_thermo_val = temp_c
+            is_high = temp_c >= THERMO_TEMP_HIGH_THRESHOLD
+
+            hex_str = "0x" + ("0000" + hex(data)[2:])[-4:].upper()
+
+            return {
+                "temperature": round(temp_c, 2),
+                "status": "HIGH" if is_high else "NORMAL",
+                "raw_hex": hex_str,
+                "unit": "°C",
+                "error": None
+            }
+        except Exception as e:
+            return {"temperature": None, "status": "error", "error": str(e)}
+
+    def read_all(self):
+        self.data_cache = {
+            "soil_moisture": self.read_soil(),
+            "dht11": self.read_dht(),
+            "mq2": self.read_mq2(),
+            "thermocouple": self.read_thermocouple()
+        }
+        return self.data_cache
+
+    def get_readings(self):
+        if not self.data_cache:
+            return self.read_all()
+        return self.data_cache
+
+
+# ==============================================================================
+# 8. KELAS KONEKSI WI-FI (DHCP & RECONNECT OTOMATIS)
+# ==============================================================================
+class WiFiManager:
+    def __init__(self, ssid=WIFI_SSID, password=WIFI_PASSWORD):
+        self.ssid = ssid
+        self.password = password
+        self.wlan = network.WLAN(network.STA_IF)
+        self.last_check = 0
+
+    def connect(self, timeout_s=WIFI_TIMEOUT_SEC):
+        if not self.wlan.active():
+            self.wlan.active(True)
+
+        try:
+            self.wlan.config(dhcp_hostname="monu-esp32")
+        except:
+            pass
+
+        if self.wlan.isconnected():
+            return True
+
+        print("[Wi-Fi] Menghubungkan ke '" + str(self.ssid) + "'...")
+        try:
+            self.wlan.connect(self.ssid, self.password)
+        except Exception as e:
+            print("[Wi-Fi] Error connect: " + str(e))
             return False
 
-    return True
+        start = time.time()
+        dots = 0
+        while not self.wlan.isconnected():
+            if time.time() - start > timeout_s:
+                print("\n[Wi-Fi] Waktu habis (" + str(timeout_s) + "s). Sistem tetap berjalan lokal.")
+                return False
+            time.sleep_ms(300)
+            print(".", end="")
+            dots += 1
+            if dots % 30 == 0:
+                print()
 
+        ip, sub, gw, dns = self.wlan.ifconfig()
+        print("\n" + "=" * 50)
+        print("          ESP32 TERHUBUNG KE JARINGAN WI-FI       ")
+        print("=" * 50)
+        print(" SSID         : " + str(self.ssid))
+        print(" IP Address   : " + str(ip))
+        print(" Subnet Mask  : " + str(sub))
+        print(" Gateway      : " + str(gw))
+        print("=" * 50 + "\n")
+        return True
 
-# ==============================================================================
-# 8. INFORMASI STATUS PERANGKAT
-# ==============================================================================
-def get_device_status():
-    """
-    Mengumpulkan seluruh status perangkat, jaringan, sensor, dan aktuator
-    dalam struktur kamus (dict) yang siap di-serialize menjadi JSON.
-    """
-    global wlan
-    is_connected = (wlan is not None and wlan.isconnected())
-    ip_addr, subnet, gateway, dns = ("0.0.0.0", "0.0.0.0", "0.0.0.0", "0.0.0.0")
-    mac_str = "00:00:00:00:00:00"
-    rssi_val = None
+    def check_and_reconnect(self):
+        now = time.ticks_ms()
+        if time.ticks_diff(now, self.last_check) < WIFI_CHECK_INTERVAL_MS:
+            return self.wlan.isconnected()
+        self.last_check = now
 
-    if is_connected:
-        ip_addr, subnet, gateway, dns = wlan.ifconfig()
-        try:
-            mac_bytes = wlan.config("mac")
-            mac_str = ":".join(f"{b:02X}" for b in mac_bytes)
-        except:
-            pass
-        try:
-            rssi_val = wlan.status("rssi")
-        except:
-            pass
+        if not self.wlan.isconnected():
+            print("[Wi-Fi] Koneksi terputus! Mencoba menyambung ulang di background...")
+            try:
+                if not self.wlan.active():
+                    self.wlan.active(True)
+                self.wlan.connect(self.ssid, self.password)
+            except Exception as e:
+                print("[Wi-Fi] Reconnect error: " + str(e))
+            return False
+        return True
 
-    # Ambil status sensor dan relay
-    soil_data   = read_soil_moisture()
-    dht_data    = read_dht11()
-    mq2_data    = read_mq2()
-    thermo_data = read_thermocouple()
-    relay_data  = get_relay_info()
+    def is_connected(self):
+        return self.wlan.isconnected()
 
-    return {
-        "device_id": DEVICE_ID,
-        "device_name": DEVICE_NAME,
-        "status": "online" if is_connected else "disconnected",
-        "device_status": "online" if is_connected else "disconnected",
-        "wifi_connected": is_connected,
-        "ip_address": ip_addr,
-        "timestamp_uptime": get_uptime_seconds(),
-        "uptime_human": get_uptime_human(),
-        "wifi": {
-            "connected": is_connected,
-            "status": "terhubung" if is_connected else "terputus",
-            "ssid": WIFI_SSID,
-            "ip_address": ip_addr,
-            "subnet_mask": subnet,
-            "gateway": gateway,
+    def get_ip(self):
+        if self.wlan.isconnected():
+            return self.wlan.ifconfig()[0]
+        return "0.0.0.0"
+
+    def get_info(self):
+        conn = self.wlan.isconnected()
+        ip, sub, gw, dns = ("0.0.0.0", "0.0.0.0", "0.0.0.0", "0.0.0.0")
+        mac_str = "00:00:00:00:00:00"
+        rssi = None
+        if conn:
+            try:
+                ip, sub, gw, dns = self.wlan.ifconfig()
+                mac_bytes = self.wlan.config("mac")
+                mac_str = ":".join("%02X" % b for b in mac_bytes)
+                rssi = self.wlan.status("rssi")
+            except:
+                pass
+        return {
+            "connected": conn,
+            "status": "terhubung" if conn else "terputus",
+            "ssid": self.ssid,
+            "ip_address": ip,
+            "subnet_mask": sub,
+            "gateway": gw,
             "dns": dns,
             "mac_address": mac_str,
-            "rssi": rssi_val
-        },
-        "sensors": {
-            "soil_moisture": soil_data,
-            "dht11": dht_data,
-            "mq2": mq2_data,
-            "thermocouple": thermo_data
-        },
-        "actuators": {
-            "relay": relay_data
+            "rssi": rssi
         }
-    }
 
 
 # ==============================================================================
-# 9. HTTP RESPONSE GENERATOR (HTML & JSON)
+# 9. KELAS HTTP REST API & WEB DASHBOARD (PORT 80)
 # ==============================================================================
-def render_dashboard_html():
-    """
-    Menghasilkan tampilan dashboard web HTML sederhana, ringan, dan responsif
-    untuk diakses via browser pada endpoint '/'.
-    """
-    status = get_device_status()
-    wifi = status["wifi"]
-    sensors = status["sensors"]
-    relay = status["actuators"]["relay"]
+class HttpServer:
+    def __init__(self, sensor_mgr, pump_ctrl, buzzer_ctrl, wifi_mgr, boot_ticks, port=SERVER_PORT):
+        self.sensor_mgr  = sensor_mgr
+        self.pump_ctrl   = pump_ctrl
+        self.buzzer_ctrl = buzzer_ctrl
+        self.wifi_mgr    = wifi_mgr
+        self.boot_ticks  = boot_ticks
+        self.port        = port
+        self.sock        = None
 
-    html = f"""<!DOCTYPE html>
-<html lang="id">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{DEVICE_NAME} - Monitoring</title>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #f8fafc; padding: 20px; }}
-        .container {{ max-width: 800px; margin: 0 auto; }}
-        .header {{ background: #1e293b; padding: 20px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #334155; }}
-        h1 {{ font-size: 22px; color: #38bdf8; margin-bottom: 6px; }}
-        .badge {{ display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; text-transform: uppercase; }}
-        .badge-online {{ background: #065f46; color: #34d399; }}
-        .badge-warn {{ background: #78350f; color: #fde68a; }}
-        .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; margin-bottom: 20px; }}
-        .card {{ background: #1e293b; padding: 18px; border-radius: 12px; border: 1px solid #334155; }}
-        .card h3 {{ font-size: 14px; color: #94a3b8; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px; }}
-        .card p {{ font-size: 14px; margin-bottom: 6px; }}
-        .val {{ font-size: 18px; font-weight: 700; color: #f8fafc; }}
-        .status-unavail {{ color: #94a3b8; font-style: italic; }}
-        .btn {{ display: inline-block; background: #0284c7; color: white; padding: 10px 18px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px; margin-top: 10px; }}
-        .btn:hover {{ background: #0369a1; }}
-        footer {{ text-align: center; font-size: 12px; color: #64748b; margin-top: 24px; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🌱 {status['device_name']} ({status['device_id']})</h1>
-            <p>Status: <span class="badge badge-online">{status['status']}</span> | Uptime: <strong>{status['uptime_human']}</strong></p>
-            <p style="margin-top: 10px;">
-                <a href="/api/status" class="btn">Buka JSON API (/api/status)</a>
-            </p>
-        </div>
+    def start(self):
+        try:
+            addr = socket.getaddrinfo("0.0.0.0", self.port)[0][-1]
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.sock.bind(addr)
+            self.sock.listen(4)
+            self.sock.settimeout(0.1)  # Non-blocking 100ms
+            print("[API] Server aktif pada port " + str(self.port))
+            return True
+        except Exception as e:
+            print("[API] Gagal bind socket port " + str(self.port) + ": " + str(e))
+            self.sock = None
+            return False
 
-        <div class="grid">
-            <div class="card">
-                <h3>Informasi Jaringan</h3>
-                <p>SSID: <strong>{wifi['ssid']}</strong></p>
-                <p>IP: <span class="val" style="color: #38bdf8;">{wifi['ip_address']}</span></p>
-                <p>Subnet: {wifi['subnet_mask']}</p>
-                <p>Gateway: {wifi['gateway']}</p>
-            </div>
+    def get_uptime_human(self):
+        sec = time.ticks_diff(time.ticks_ms(), self.boot_ticks) // 1000
+        h = sec // 3600
+        m = (sec % 3600) // 60
+        s = sec % 60
+        return str(h) + "j " + str(m) + "m " + str(s) + "d"
 
-            <div class="card">
-                <h3>Relay & Pompa (GPIO {relay['gpio']})</h3>
-                <p>Status Pompa: <span class="val" style="color: {'#34d399' if relay['state'] else '#94a3b8'};">{relay['state_label']}</span></p>
-                <p>Aktuator siap dihubungkan ke driver pompa.</p>
-            </div>
-        </div>
+    def build_prd_format(self):
+        """Menghasilkan format data konsisten sesuai PRD Seksi 9."""
+        s = self.sensor_mgr.get_readings()
+        dht_s = s.get("dht11", {})
+        soil  = s.get("soil_moisture", {})
+        mq2   = s.get("mq2", {})
+        tc    = s.get("thermocouple", {})
 
-        <div class="grid">
-            <div class="card">
-                <h3>Soil Moisture (GPIO {sensors['soil_moisture']['gpio']})</h3>
-                <p>Status: <span class="status-unavail">{sensors['soil_moisture']['status']}</span></p>
-                <p>Nilai: <span class="val">{sensors['soil_moisture']['raw_adc'] or '-'}</span></p>
-            </div>
+        is_dry = soil.get("soil_dry", False)
+        gas_det = mq2.get("gas_detected", False)
+        pump_on = self.pump_ctrl.is_active
+        buzzer_on = self.buzzer_ctrl.is_active
 
-            <div class="card">
-                <h3>DHT11 (GPIO {sensors['dht11']['gpio']})</h3>
-                <p>Status: <span class="status-unavail">{sensors['dht11']['status']}</span></p>
-                <p>Suhu: <span class="val">{sensors['dht11']['temperature'] or '-'} °C</span></p>
-                <p>Kelembapan: <span class="val">{sensors['dht11']['humidity'] or '-'} %RH</span></p>
-            </div>
+        sys_status = "alarm" if (gas_det or pump_on or buzzer_on) else "normal"
 
-            <div class="card">
-                <h3>MQ-2 Gas (GPIO {sensors['mq2']['gpio']})</h3>
-                <p>Status: <span class="status-unavail">{sensors['mq2']['status']}</span></p>
-                <p>Nilai: <span class="val">{sensors['mq2']['raw_adc'] or '-'}</span></p>
-            </div>
-
-            <div class="card">
-                <h3>Thermocouple (MAX6675)</h3>
-                <p>Status: <span class="status-unavail">{sensors['thermocouple']['status']}</span></p>
-                <p>Suhu: <span class="val">{sensors['thermocouple']['temperature'] or '-'} °C</span></p>
-            </div>
-        </div>
-
-        <footer>
-            ESP32 IoT Node &bull; MicroPython &bull; Port 80 Web Server
-        </footer>
-    </div>
-</body>
-</html>"""
-    return html
-
-
-def send_response(client_socket, status_code, content_type, body_bytes):
-    """Mengirim header dan isi respons HTTP secara aman ke client."""
-    status_msg = "OK" if status_code == 200 else ("Not Found" if status_code == 404 else "Internal Error")
-    header = (
-        f"HTTP/1.1 {status_code} {status_msg}\r\n"
-        f"Content-Type: {content_type}\r\n"
-        f"Content-Length: {len(body_bytes)}\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Access-Control-Allow-Methods: GET, OPTIONS\r\n"
-        "Connection: close\r\n"
-        "\r\n"
-    )
-    client_socket.sendall(header.encode("utf-8"))
-    client_socket.sendall(body_bytes)
-
-
-# ==============================================================================
-# 10. PENANGANAN PERMINTAAN HTTP (ROUTING)
-# ==============================================================================
-def handle_request(client_socket):
-    """
-    Menangani permintaan HTTP dari browser atau aplikasi client.
-    Mendukung routing:
-      - GET /            -> Dashboard status perangkat (HTML / JSON)
-      - GET /api/status   -> Respons JSON lengkap status perangkat
-    """
-    try:
-        raw_request = client_socket.recv(1024)
-        if not raw_request:
-            return
-
-        request_text = raw_request.decode("utf-8", "ignore")
-        lines = request_text.split("\r\n")
-        if len(lines) == 0:
-            return
-
-        request_line = lines[0]
-        parts = request_line.split()
-        if len(parts) < 2:
-            return
-
-        method = parts[0]
-        full_path = parts[1]
-
-        # Pisahkan path dari query parameter jika ada
-        path = full_path.split("?")[0]
-
-        print(f"[HTTP] {method} {path}")
-
-        # Tangani endpoint API status (JSON)
-        if path == "/api/status":
-            data = get_device_status()
-            json_str = json.dumps(data)
-            send_response(client_socket, 200, "application/json; charset=utf-8", json_str.encode("utf-8"))
-
-        # Tangani endpoint utama (/)
-        elif path == "/":
-            # Jika client secara spesifik meminta JSON (Accept: application/json)
-            if "application/json" in request_text and "text/html" not in request_text:
-                data = get_device_status()
-                json_str = json.dumps(data)
-                send_response(client_socket, 200, "application/json; charset=utf-8", json_str.encode("utf-8"))
-            else:
-                html_body = render_dashboard_html()
-                send_response(client_socket, 200, "text/html; charset=utf-8", html_body.encode("utf-8"))
-
-        # Endpoint 404 (Tidak ditemukan)
-        else:
-            err_data = {"error": "Endpoint tidak ditemukan", "path": path, "code": 404}
-            json_str = json.dumps(err_data)
-            send_response(client_socket, 404, "application/json; charset=utf-8", json_str.encode("utf-8"))
-
-    except Exception as e:
-        print(f"[HTTP] Error memproses permintaan: {e}")
-    finally:
-        # Bersihkan memori RAM MicroPython
-        gc.collect()
-
-
-def sync_to_supabase(status):
-    """
-    Mengirim data sensor ke Supabase REST API (PostgreSQL).
-    """
-    global _last_supabase_sync
-    if not ENABLE_SUPABASE:
-        return
-    now = time.ticks_ms()
-    if time.ticks_diff(now, _last_supabase_sync) < SUPABASE_SYNC_INTERVAL_MS:
-        return
-    _last_supabase_sync = now
-
-    try:
-        import urequests
-        sensors = status.get("sensors", {})
-        dht_s = sensors.get("dht11", {})
-        soil_s = sensors.get("soil_moisture", {})
-        mq2_s = sensors.get("mq2", {})
-        thermo_s = sensors.get("thermocouple", {})
-        relay_s = status.get("actuators", {}).get("relay", {})
-
-        payload = {
-            "device_id": DEVICE_ID,
-            "device_name": DEVICE_NAME,
+        return {
             "temperature": dht_s.get("temperature"),
             "humidity": dht_s.get("humidity"),
-            "soil_moisture_raw": soil_s.get("raw_adc"),
-            "mq2_raw": mq2_s.get("raw_adc"),
-            "thermocouple": thermo_s.get("temperature"),
-            "relay_active": relay_s.get("state") == 1,
-            "pump_active": relay_s.get("state") == 1,
-            "wifi_connected": status.get("wifi_connected", True),
-            "ip_address": status.get("ip_address"),
-            "device_status": status.get("device_status", "online")
+            "thermocouple_temperature": tc.get("temperature"),
+            "gas_value": mq2.get("raw"),
+            "soil_value": soil.get("raw"),
+            "soil_moisture": soil.get("percentage"),
+            "gas_detected": gas_det,
+            "soil_dry": is_dry,
+            "pump_status": pump_on,
+            "buzzer_status": buzzer_on,
+            "system_status": sys_status
         }
 
-        headers = {
-            "apikey": SUPABASE_KEY,
-            "Authorization": "Bearer " + SUPABASE_KEY,
-            "Content-Type": "application/json",
-            "Prefer": "return=minimal"
+    def build_full_status(self):
+        """Format lengkap kompatibel dengan PRD dan Flutter App."""
+        prd = self.build_prd_format()
+        sensors = self.sensor_mgr.get_readings()
+        pump_info = self.pump_ctrl.get_status()
+        buzzer_info = self.buzzer_ctrl.get_status()
+        wifi_info = self.wifi_mgr.get_info()
+        uptime_sec = time.ticks_diff(time.ticks_ms(), self.boot_ticks) // 1000
+
+        full = {
+            "device": "ESP32",
+            "device_id": DEVICE_ID,
+            "device_name": DEVICE_NAME,
+            "status": "online" if wifi_info["connected"] else "disconnected",
+            "device_status": "online" if wifi_info["connected"] else "disconnected",
+            "wifi_connected": wifi_info["connected"],
+            "ip_address": wifi_info["ip_address"],
+            "uptime_seconds": uptime_sec,
+            "uptime_human": self.get_uptime_human(),
+            "free_ram_bytes": gc.mem_free(),
+            "wifi": wifi_info,
+            "sensors": sensors,
+            "pump": {
+                "active": pump_info["active"],
+                "reasons": pump_info["active_reasons"],
+                "runtime_seconds": pump_info["runtime_seconds"],
+                "in_cooldown": pump_info["in_cooldown"]
+            },
+            "buzzer": buzzer_info,
+            "actuators": {
+                "relay": pump_info,
+                "buzzer": buzzer_info
+            }
         }
-        res = urequests.post(SUPABASE_URL + "/rest/v1/sensor_readings", json=payload, headers=headers)
-        res.close()
-    except Exception:
-        pass
+        full.update(prd)
+        return full
+
+    def render_html(self):
+        """
+        Membangun Web Dashboard HTML sederhana dan bebas error sintaks parser MicroPython.
+        Menggunakan penggabungan string murni tanpa nested f-strings.
+        """
+        full = self.build_full_status()
+        s = full.get("sensors", {})
+        soil = s.get("soil_moisture", {})
+        dht_s = s.get("dht11", {})
+        mq2 = s.get("mq2", {})
+        tc  = s.get("thermocouple", {})
+        p   = full.get("pump", {})
+        b   = full.get("buzzer", {})
+        w   = full.get("wifi", {})
+
+        p_active = p.get("active", False)
+        pump_color = "#22c55e" if p_active else "#94a3b8"
+        pump_label = "AKTIF (MENYIRAM)" if p_active else "STANDBY (MATI)"
+
+        b_active = b.get("active", False)
+        buzzer_color = "#f43f5e" if b_active else "#94a3b8"
+        buzzer_label = "BUNYI (ALARM)" if b_active else "STANDBY (SENYAP)"
+
+        soil_dry = soil.get("soil_dry", False)
+        soil_badge_cls = "bg-warn" if soil_dry else "bg-on"
+        soil_pct_val = str(soil.get("percentage", "-"))
+        soil_raw_val = str(soil.get("raw", "-"))
+        soil_stat_val = str(soil.get("status", "NORMAL"))
+
+        dht_stat = str(dht_s.get("status", "NORMAL"))
+        dht_badge_cls = "bg-danger" if dht_stat == "HIGH" else "bg-on"
+        dht_temp_val = str(dht_s.get("temperature", "-"))
+        dht_hum_val = str(dht_s.get("humidity", "-"))
+
+        tc_stat = str(tc.get("status", "NORMAL"))
+        tc_badge_cls = "bg-danger" if tc_stat in ("error", "HIGH") else "bg-on"
+        tc_temp_val = str(tc.get("temperature", "-"))
+        tc_hex_val = str(tc.get("raw_hex", "-"))
+        tc_err = tc.get("error")
+        tc_err_block = ("<p class='sub' style='color:#f43f5e'>" + str(tc_err) + "</p>") if tc_err else ""
+
+        mq2_gas = mq2.get("gas_detected", False)
+        mq2_badge_cls = "bg-danger" if mq2_gas else "bg-on"
+        mq2_raw_val = str(mq2.get("raw", "-"))
+        mq2_stat_val = str(mq2.get("status", "NORMAL"))
+
+        p_runtime = str(p.get("runtime_seconds", 0))
+        p_reasons = p.get("reasons", [])
+        p_reasons_str = ", ".join(p_reasons) if p_reasons else ""
+        p_reasons_block = ("<p class='sub' style='color:#fbbf24'>Pemicu: " + p_reasons_str + "</p>") if p_reasons_str else ""
+
+        b_reasons = b.get("active_reasons", [])
+        b_reasons_str = ", ".join(b_reasons) if b_reasons else ""
+        b_reasons_block = ("<p class='sub' style='color:#f43f5e'>Pemicu: " + b_reasons_str + "</p>") if b_reasons_str else ""
+
+        uptime_str = str(full.get("uptime_human", "-"))
+        ip_str = str(w.get("ip_address", "0.0.0.0"))
+        cooldown_str = str(self.pump_ctrl.get_cooldown_remaining_sec())
+
+        html = (
+            "<!DOCTYPE html><html lang='id'><head><meta charset='UTF-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1.0'>"
+            "<title>" + str(DEVICE_NAME) + "</title>"
+            "<style>"
+            "*{box-sizing:border-box;margin:0;padding:0}"
+            "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0b1320;color:#f8fafc;padding:16px;line-height:1.5}"
+            ".wrap{max-width:850px;margin:0 auto}"
+            ".head{background:#1e293b;padding:20px;border-radius:14px;border:1px solid #334155;margin-bottom:16px}"
+            "h1{font-size:22px;color:#38bdf8;margin-bottom:6px}"
+            ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin-bottom:16px}"
+            ".card{background:#1e293b;padding:18px;border-radius:14px;border:1px solid #334155}"
+            ".card h3{font-size:13px;color:#94a3b8;text-transform:uppercase;margin-bottom:10px}"
+            ".val{font-size:24px;font-weight:700;color:#f8fafc;margin:4px 0}"
+            ".sub{font-size:13px;color:#94a3b8}"
+            ".badge{display:inline-block;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:700}"
+            ".bg-on{background:#065f46;color:#34d399}"
+            ".bg-warn{background:#78350f;color:#fbbf24}"
+            ".bg-danger{background:#881337;color:#f43f5e}"
+            ".btn{display:inline-block;padding:8px 14px;border-radius:8px;font-weight:600;font-size:12px;text-decoration:none;margin-right:8px;margin-top:6px;background:#0284c7;color:white}"
+            "</style></head><body>"
+            "<div class='wrap'>"
+            "<div class='head'>"
+            "<h1>🌱 " + str(DEVICE_NAME) + " (" + str(DEVICE_ID) + ")</h1>"
+            "<p class='sub'>Uptime: <strong>" + uptime_str + "</strong> &bull; IP: <strong style='color:#38bdf8'>" + ip_str + "</strong></p>"
+            "<div style='margin-top:10px'>"
+            "<a href='/api/status' class='btn' target='_blank'>JSON /api/status</a>"
+            "<a href='/status' class='btn' target='_blank'>JSON PRD /status</a>"
+            "<a href='/pump?action=toggle' class='btn' style='background:#059669'>Manual Pompa</a>"
+            "<a href='/buzzer?action=toggle' class='btn' style='background:#dc2626'>Manual Buzzer</a>"
+            "</div></div>"
+            "<div class='grid'>"
+            "<div class='card'>"
+            "<h3>Pompa Air (Relay GPIO " + str(PIN_RELAY) + ")</h3>"
+            "<div class='val' style='color:" + pump_color + "'>" + pump_label + "</div>"
+            "<p class='sub'>Durasi: " + p_runtime + "s &bull; Cooldown: " + cooldown_str + "s</p>"
+            + p_reasons_block +
+            "</div>"
+            "<div class='card'>"
+            "<h3>Buzzer Alarm (GPIO " + str(PIN_BUZZER) + ")</h3>"
+            "<div class='val' style='color:" + buzzer_color + "'>" + buzzer_label + "</div>"
+            "<p class='sub'>Status Peringatan Suara</p>"
+            + b_reasons_block +
+            "</div>"
+            "<div class='card'>"
+            "<h3>Kelembapan Tanah (GPIO " + str(PIN_SOIL_MOISTURE) + ")</h3>"
+            "<div class='val'>" + soil_pct_val + "%</div>"
+            "<p class='sub'>ADC: " + soil_raw_val + " &bull; Status: <span class='badge " + soil_badge_cls + "'>" + soil_stat_val + "</span></p>"
+            "</div>"
+            "<div class='card'>"
+            "<h3>DHT11 Suhu & Kelembapan (GPIO " + str(PIN_DHT11) + ")</h3>"
+            "<div class='val'>" + dht_temp_val + " °C</div>"
+            "<p class='sub'>Kelembapan Udara: <strong>" + dht_hum_val + "%RH</strong></p>"
+            "<p class='sub'>Status: <span class='badge " + dht_badge_cls + "'>" + dht_stat + "</span></p>"
+            "</div>"
+            "<div class='card'>"
+            "<h3>Thermocouple K-Type (MAX6675)</h3>"
+            "<div class='val'>" + tc_temp_val + " °C</div>"
+            "<p class='sub'>Frame Hex: " + tc_hex_val + " &bull; Status: <span class='badge " + tc_badge_cls + "'>" + tc_stat + "</span></p>"
+            + tc_err_block +
+            "</div>"
+            "<div class='card'>"
+            "<h3>MQ-2 Gas / Asap (GPIO " + str(PIN_MQ2) + ")</h3>"
+            "<div class='val'>" + mq2_raw_val + " <span style='font-size:14px;color:#94a3b8'>ADC</span></div>"
+            "<p class='sub'>Ambang Batas: " + str(MQ2_GAS_THRESHOLD) + " ADC</p>"
+            "<p class='sub'>Status: <span class='badge " + mq2_badge_cls + "'>" + mq2_stat_val + "</span></p>"
+            "</div>"
+            "</div></div></body></html>"
+        )
+        return html
+
+    def send_resp(self, client, code, content_type, body_str):
+        body_bytes = body_str.encode("utf-8")
+        msg = "OK" if code == 200 else ("Not Found" if code == 404 else "Error")
+        header = (
+            "HTTP/1.1 " + str(code) + " " + msg + "\r\n"
+            "Content-Type: " + content_type + "\r\n"
+            "Content-Length: " + str(len(body_bytes)) + "\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+        )
+        client.sendall(header.encode("utf-8"))
+        client.sendall(body_bytes)
+
+    def handle_client(self, client):
+        try:
+            req_data = client.recv(1024)
+            if not req_data:
+                return
+
+            req_str = req_data.decode("utf-8", "ignore")
+            lines = req_str.split("\r\n")
+            if not lines:
+                return
+
+            parts = lines[0].split()
+            if len(parts) < 2:
+                return
+
+            method = parts[0]
+            full_path = parts[1]
+            path_split = full_path.split("?")
+            path = path_split[0]
+            query_str = path_split[1] if len(path_split) > 1 else ""
+
+            # 1. Endpoint /api/status (Kompatibel penuh dengan Flutter App)
+            if path == "/api/status":
+                payload = self.build_full_status()
+                self.send_resp(client, 200, "application/json; charset=utf-8", json.dumps(payload))
+
+            # 2. Endpoint /status (Format Persis PRD Seksi 9)
+            elif path == "/status":
+                payload = self.build_prd_format()
+                self.send_resp(client, 200, "application/json; charset=utf-8", json.dumps(payload))
+
+            # 3. Endpoint /sensors
+            elif path == "/sensors":
+                payload = self.sensor_mgr.get_readings()
+                self.send_resp(client, 200, "application/json; charset=utf-8", json.dumps(payload))
+
+            # 4. Endpoint /pump
+            elif path == "/pump":
+                if "action=on" in query_str:
+                    self.pump_ctrl.turn_on("Manual HTTP API (action=on)")
+                elif "action=off" in query_str:
+                    self.pump_ctrl.turn_off("Manual HTTP API (action=off)")
+                elif "action=toggle" in query_str:
+                    if self.pump_ctrl.is_active:
+                        self.pump_ctrl.turn_off("Manual HTTP API Toggle")
+                    else:
+                        self.pump_ctrl.turn_on("Manual HTTP API Toggle")
+                payload = self.pump_ctrl.get_status()
+                self.send_resp(client, 200, "application/json; charset=utf-8", json.dumps(payload))
+
+            # 5. Endpoint /buzzer
+            elif path == "/buzzer":
+                if "action=on" in query_str:
+                    self.buzzer_ctrl.turn_on("Manual HTTP API (action=on)")
+                elif "action=off" in query_str:
+                    self.buzzer_ctrl.turn_off("Manual HTTP API (action=off)")
+                elif "action=toggle" in query_str:
+                    if self.buzzer_ctrl.is_active:
+                        self.buzzer_ctrl.turn_off("Manual HTTP API Toggle")
+                    else:
+                        self.buzzer_ctrl.turn_on("Manual HTTP API Toggle")
+                payload = self.buzzer_ctrl.get_status()
+                self.send_resp(client, 200, "application/json; charset=utf-8", json.dumps(payload))
+
+            # 6. Endpoint /health
+            elif path == "/health":
+                payload = {
+                    "status": "healthy",
+                    "uptime": self.get_uptime_human(),
+                    "free_ram_bytes": gc.mem_free(),
+                    "wifi_connected": self.wifi_mgr.is_connected(),
+                    "pump_active": self.pump_ctrl.is_active,
+                    "buzzer_active": self.buzzer_ctrl.is_active
+                }
+                self.send_resp(client, 200, "application/json; charset=utf-8", json.dumps(payload))
+
+            # 7. Endpoint / (Dashboard Web HTML)
+            elif path == "/":
+                if "application/json" in req_str and "text/html" not in req_str:
+                    payload = self.build_full_status()
+                    self.send_resp(client, 200, "application/json; charset=utf-8", json.dumps(payload))
+                else:
+                    html_content = self.render_html()
+                    self.send_resp(client, 200, "text/html; charset=utf-8", html_content)
+
+            # 404 Not Found
+            else:
+                err_dict = {"error": "Endpoint tidak ditemukan", "path": path, "code": 404}
+                self.send_resp(client, 404, "application/json; charset=utf-8", json.dumps(err_dict))
+
+        except Exception as e:
+            print("[API] Error handling: " + str(e))
+        finally:
+            gc.collect()
+
+    def process_incoming(self):
+        if not self.sock:
+            return
+        try:
+            client, addr = self.sock.accept()
+            client.settimeout(1.5)
+            self.handle_client(client)
+            client.close()
+        except OSError:
+            pass  # Timeout normal (non-blocking)
+        except Exception as e:
+            print("[API] Error accept: " + str(e))
 
 
 # ==============================================================================
-# 11. SERVER UTAMA (NON-BLOCKING)
+# 10. LOGIKA PENGAMBILAN KEPUTUSAN OTOMASI (PRD SEKSI 7)
 # ==============================================================================
-def start_server(port=SERVER_PORT):
+def evaluate_automation(sensor_data, pump_ctrl, buzzer_ctrl):
     """
-    Menyiapkan dan membuka socket HTTP Server pada port yang ditentukan (default: 80).
-    Socket diatur dengan timeout pendek agar non-blocking.
+    Kombinasi Logika Otomatisasi (PRD Seksi 7):
+    -------------------------------------------------------------------------
+    Kondisi                   | Pompa | Buzzer
+    -------------------------------------------------------------------------
+    Semua sensor normal       | OFF   | OFF
+    Tanah kering              | ON    | OFF
+    Gas terdeteksi            | OFF   | ON
+    Suhu udara tinggi         | ON    | ON
+    Suhu thermocouple tinggi  | ON    | ON
+    -------------------------------------------------------------------------
+    Prioritas Logika:
+    - Pompa ON jika: tanah kering ATAU suhu udara tinggi ATAU thermocouple tinggi.
+    - Buzzer ON jika: gas terdeteksi ATAU suhu udara tinggi ATAU thermocouple tinggi.
     """
-    addr = socket.getaddrinfo("0.0.0.0", port)[0][-1]
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind(addr)
-    server_socket.listen(5)
-    server_socket.settimeout(0.5)  # Timeout 500ms agar loop utama tidak membeku
+    soil   = sensor_data.get("soil_moisture", {})
+    dht_s  = sensor_data.get("dht11", {})
+    mq2    = sensor_data.get("mq2", {})
+    thermo = sensor_data.get("thermocouple", {})
 
-    print(f"[Server] HTTP Server berjalan di port {port}")
-    return server_socket
+    pump_reasons = []
+    buzzer_reasons = []
+
+    # 1. Evaluasi Kelembapan Tanah (Hysteresis)
+    if soil.get("status") != "error" and soil.get("percentage") is not None:
+        pct = soil["percentage"]
+        if pump_ctrl.is_active:
+            if pct < SOIL_TARGET_WET_PERCENT:
+                pump_reasons.append("Tanah belum basah (" + str(pct) + "% < " + str(SOIL_TARGET_WET_PERCENT) + "%)")
+        else:
+            if pct <= SOIL_TRIGGER_DRY_PERCENT:
+                pump_reasons.append("Tanah kering (" + str(pct) + "%)")
+
+    # 2. Evaluasi Suhu Lingkungan DHT11
+    if dht_s.get("status") != "error" and dht_s.get("temperature") is not None:
+        temp_dht = dht_s["temperature"]
+        if pump_ctrl.is_active or buzzer_ctrl.is_active:
+            if temp_dht > DHT_TEMP_SAFE_THRESHOLD:
+                msg_dht_warm = "Suhu udara masih hangat (" + str(temp_dht) + "°C)"
+                pump_reasons.append(msg_dht_warm)
+                buzzer_reasons.append(msg_dht_warm)
+        else:
+            if temp_dht >= DHT_TEMP_HIGH_THRESHOLD:
+                msg_dht_high = "Suhu udara tinggi (" + str(temp_dht) + "°C)"
+                pump_reasons.append(msg_dht_high)
+                buzzer_reasons.append(msg_dht_high)
+
+    # 3. Evaluasi Suhu Thermocouple MAX6675
+    if thermo.get("status") != "error" and thermo.get("temperature") is not None:
+        temp_tc = thermo["temperature"]
+        if pump_ctrl.is_active or buzzer_ctrl.is_active:
+            if temp_tc > THERMO_TEMP_SAFE_THRESHOLD:
+                msg_tc_warm = "Thermocouple masih panas (" + str(temp_tc) + "°C)"
+                pump_reasons.append(msg_tc_warm)
+                buzzer_reasons.append(msg_tc_warm)
+        else:
+            if temp_tc >= THERMO_TEMP_HIGH_THRESHOLD:
+                msg_tc_high = "Suhu thermocouple tinggi (" + str(temp_tc) + "°C)"
+                pump_reasons.append(msg_tc_high)
+                buzzer_reasons.append(msg_tc_high)
+
+    # 4. Evaluasi Gas MQ-2
+    if mq2.get("status") != "error" and mq2.get("gas_detected"):
+        buzzer_reasons.append("Gas terdeteksi (" + str(mq2.get("raw")) + " ADC)")
+
+    # 5. Pengaman Timeout Pompa
+    if pump_ctrl.is_active and pump_ctrl.get_runtime_seconds() >= PUMP_MAX_RUNTIME_SEC:
+        pump_ctrl.turn_off("Batas waktu maksimal " + str(PUMP_MAX_RUNTIME_SEC) + "s tercapai")
+        pump_reasons = []
+
+    # 6. Pengaman Cooldown Pompa
+    if not pump_ctrl.is_active and pump_ctrl.get_cooldown_remaining_sec() > 0:
+        pump_reasons = []
+
+    # 7. Eksekusi Pompa
+    if len(pump_reasons) > 0:
+        pump_ctrl.active_reasons = pump_reasons
+        if not pump_ctrl.is_active:
+            pump_ctrl.turn_on(" + ".join(pump_reasons))
+    else:
+        if pump_ctrl.is_active:
+            pump_ctrl.turn_off("Kondisi lingkungan normal & tanah tercukupi")
+
+    # 8. Eksekusi Buzzer
+    if len(buzzer_reasons) > 0:
+        buzzer_ctrl.active_reasons = buzzer_reasons
+        if not buzzer_ctrl.is_active:
+            buzzer_ctrl.turn_on(" + ".join(buzzer_reasons))
+    else:
+        if buzzer_ctrl.is_active:
+            buzzer_ctrl.turn_off("Kondisi lingkungan kembali aman")
 
 
 # ==============================================================================
-# 12. FUNGSI EKSEKUSI UTAMA (MAIN LOOP)
+# 11. FORMAT SERIAL MONITOR (PRD SEKSI 12)
+# ==============================================================================
+def print_serial_monitor(sensor_data, pump_ctrl, buzzer_ctrl):
+    """Mencetak status pemantauan rapi sesuai format PRD Seksi 12."""
+    soil   = sensor_data.get("soil_moisture", {})
+    dht_s  = sensor_data.get("dht11", {})
+    mq2    = sensor_data.get("mq2", {})
+    thermo = sensor_data.get("thermocouple", {})
+
+    temp_air_val = dht_s.get("temperature")
+    temp_air_str = (str(temp_air_val) + " C") if temp_air_val is not None else "ERROR"
+
+    hum_air_val  = dht_s.get("humidity")
+    hum_air_str  = (str(hum_air_val) + " %") if hum_air_val is not None else "ERROR"
+
+    tc_val       = thermo.get("temperature")
+    tc_str       = (str(tc_val) + " C") if tc_val is not None else "ERROR"
+
+    mq2_val_str  = str(mq2.get("raw", "-"))
+    soil_val_str = str(soil.get("raw", "-"))
+
+    soil_pct_val = soil.get("percentage")
+    soil_pct_str = (str(soil_pct_val) + " %") if soil_pct_val is not None else "ERROR"
+
+    gas_status   = str(mq2.get("status", "NORMAL"))
+    soil_status  = str(soil.get("status", "NORMAL"))
+    pump_status  = "ON" if pump_ctrl.is_active else "OFF"
+    buzzer_status = "ON" if buzzer_ctrl.is_active else "OFF"
+
+    sys_status = "NORMAL"
+    if mq2.get("gas_detected") or pump_ctrl.is_active or buzzer_ctrl.is_active:
+        sys_status = "ALERT / ACTIVE"
+
+    print("================================")
+    print("        IOT MONITORING          ")
+    print("================================")
+    print("Air Temperature : " + temp_air_str)
+    print("Air Humidity    : " + hum_air_str)
+    print("Thermocouple    : " + tc_str)
+    print("MQ-2 Value      : " + mq2_val_str)
+    print("Soil Value      : " + soil_val_str)
+    print("Soil Moisture   : " + soil_pct_str)
+    print("")
+    print("Gas Status      : " + gas_status)
+    print("Soil Status     : " + soil_status)
+    print("Pump Status     : " + pump_status)
+    print("Buzzer Status   : " + buzzer_status)
+    print("System Status   : " + sys_status)
+    print("================================\n")
+
+
+# ==============================================================================
+# 12. FUNGSI UTAMA (MAIN LOOP)
 # ==============================================================================
 def main():
-    """
-    Fungsi eksekusi utama sistem IoT ESP32.
-    Mengatur alur: Inisialisasi -> Koneksi Wi-Fi -> Start Server -> Main Loop.
-    """
-    print("\n==================================================")
-    print("      MEMULAI PROGRAM UTAMA ESP32 (MONU)          ")
+    boot_ticks = time.ticks_ms()
+
+    print("\n" + "=" * 60)
+    print("   SISTEM MONITORING & OTOMASI BERBASIS IoT ESP32 (MONU)   ")
+    print("=" * 60)
+    print(" [KONFIGURASI GPIO PRD SEKSI 4]")
+    print("  - MAX6675 SCK     : GPIO " + str(PIN_MAX6675_SCK))
+    print("  - MAX6675 SO      : GPIO " + str(PIN_MAX6675_SO))
+    print("  - MAX6675 CS      : GPIO " + str(PIN_MAX6675_CS))
+    print("  - MQ-2 AO         : GPIO " + str(PIN_MQ2))
+    print("  - DHT11 DATA      : GPIO " + str(PIN_DHT11))
+    print("  - Soil Moisture AO: GPIO " + str(PIN_SOIL_MOISTURE))
+    relay_mode_str = "Active-LOW" if RELAY_ACTIVE_LOW else "Active-HIGH"
+    print("  - Relay Pompa IN  : GPIO " + str(PIN_RELAY) + " (" + relay_mode_str + ")")
+    print("  - Buzzer IO       : GPIO " + str(PIN_BUZZER))
+    print("=" * 60 + "\n")
+
+    # 1. Inisialisasi Aktuator Pompa & Buzzer
+    print("[1/5] Inisialisasi Aktuator (Pompa & Buzzer)...")
+    pump_ctrl = PumpController(pin_num=PIN_RELAY, active_low=RELAY_ACTIVE_LOW)
+    buzzer_ctrl = BuzzerController(pin_num=PIN_BUZZER, active_high=BUZZER_ACTIVE_HIGH, use_pwm=BUZZER_USE_PWM)
+
+    # Uji coba bunyi bip singkat penanda sistem aktif
+    buzzer_ctrl.beep(80)
+
+    # 2. Inisialisasi Seluruh Sensor
+    print("[2/5] Inisialisasi Sensor...")
+    sensor_mgr = SensorManager(boot_ticks=boot_ticks)
+
+    # 3. Hubungkan Wi-Fi
+    print("[3/5] Menghubungkan ke Wi-Fi '" + str(WIFI_SSID) + "'...")
+    wifi_mgr = WiFiManager(ssid=WIFI_SSID, password=WIFI_PASSWORD)
+    wifi_mgr.connect(timeout_s=WIFI_TIMEOUT_SEC)
+
+    # 4. Jalankan HTTP REST API Server
+    print("[4/5] Memulai HTTP Server port 80...")
+    http_server = HttpServer(
+        sensor_mgr=sensor_mgr,
+        pump_ctrl=pump_ctrl,
+        buzzer_ctrl=buzzer_ctrl,
+        wifi_mgr=wifi_mgr,
+        boot_ticks=boot_ticks,
+        port=SERVER_PORT
+    )
+    http_server.start()
+
+    ip = wifi_mgr.get_ip()
+    print("[5/5] Inisialisasi Selesai.")
     print("==================================================")
-
-    # 1. Inisialisasi pin hardware
-    init_hardware()
-
-    # 2. Hubungkan ke Wi-Fi (DHCP)
-    wifi_ok = connect_wifi(timeout_s=15)
-    if not wifi_ok:
-        print("[System] Melanjutkan tanpa Wi-Fi. ESP32 akan tetap mencoba koneksi.\n")
-
-    # 3. Jalankan HTTP Server
-    server_socket = start_server(SERVER_PORT)
-
-    ip = get_ip_address()
-    print("==================================================")
-    print("                 STATUS SERVER SIAP               ")
-    print("==================================================")
-    print(f" URL Dashboard : http://{ip}/")
-    print(f" Endpoint API  : http://{ip}/api/status")
+    print(" Web Dashboard : http://" + str(ip) + "/")
+    print(" REST API JSON : http://" + str(ip) + "/api/status")
+    print(" PRD JSON      : http://" + str(ip) + "/status")
     print("==================================================\n")
-    print("[System] Siap melayani permintaan HTTP. Tekan Ctrl+C untuk berhenti.\n")
 
-    # 4. Loop Utama
-    while True:
-        try:
-            # A. Periksa dan jaga koneksi Wi-Fi secara berkala
-            check_wifi_connection()
+    last_sensor_ticks = 0
+    last_log_ticks = 0
 
-            # B. Sinkronisasi data ke Supabase Cloud (PostgreSQL)
-            sync_to_supabase(get_device_status())
+    try:
+        while True:
+            now = time.ticks_ms()
 
-            # C. Tangani koneksi client yang masuk (Non-blocking)
-            try:
-                client_sock, client_addr = server_socket.accept()
-                client_sock.settimeout(2.0)  # Timeout komunikasi client
-                handle_request(client_sock)
-                client_sock.close()
-            except OSError:
-                # Timeout normal ketika tidak ada client yang masuk dalam 500ms
-                pass
+            # A. Layani request HTTP secara non-blocking
+            http_server.process_incoming()
 
-            # C. Yield sejenak untuk stabilitas sistem
-            time.sleep_ms(20)
+            # B. Cek status Wi-Fi & reconnect otomatis di latar belakang
+            wifi_mgr.check_and_reconnect()
 
-        except KeyboardInterrupt:
-            print("\n[System] Program dihentikan oleh pengguna.")
-            if server_socket:
-                server_socket.close()
-            break
-        except Exception as e:
-            print(f"[System] Kesalahan pada main loop: {e}")
-            time.sleep(1)
+            # C. Pembacaan Sensor & Evaluasi Logika Otomasi (Tiap 1 detik)
+            if time.ticks_diff(now, last_sensor_ticks) >= SENSOR_READ_INTERVAL_MS:
+                last_sensor_ticks = now
 
+                # Baca semua sensor
+                data = sensor_mgr.read_all()
 
-# Jalankan program jika dieksekusi sebagai main script
+                # Jalankan tabel logika otomasi (Pompa & Buzzer)
+                evaluate_automation(data, pump_ctrl, buzzer_ctrl)
+
+            # D. Cetak Format Serial Monitor (Tiap 3 detik)
+            if time.ticks_diff(now, last_log_ticks) >= SERIAL_LOG_INTERVAL_MS:
+                last_log_ticks = now
+                print_serial_monitor(sensor_mgr.get_readings(), pump_ctrl, buzzer_ctrl)
+                gc.collect()
+
+            # Delay kooperatif 10ms
+            time.sleep_ms(10)
+
+    except KeyboardInterrupt:
+        print("\n[System] Program dihentikan pengguna.")
+    finally:
+        print("[System] Mematikan seluruh aktuator (Pompa & Buzzer)...")
+        pump_ctrl.turn_off("Shutdown Sistem")
+        buzzer_ctrl.turn_off("Shutdown Sistem")
+        print("[System] Selesai.")
+
 if __name__ == "__main__":
     main()
